@@ -251,7 +251,7 @@ fn identify_nuvoton(chip_id: u16) -> ChipType {
 }
 
 fn identify_ite(chip_id: u16) -> ChipType {
-    match chip_id & 0xFFFF {
+    match chip_id {
         0x8686 => ChipType::Ite8686,
         0x8688 => ChipType::Ite8688,
         0x8689 => ChipType::Ite8689,

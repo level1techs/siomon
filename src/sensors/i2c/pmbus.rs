@@ -324,7 +324,7 @@ fn probe_pmbus_with_pages(bus: u32, addr: u16, vrm_index: &mut u32) -> Vec<Pmbus
         // Sanity: check VIN is plausible
         if let Ok(vin_raw) = dev.read_word_data(PMBUS_READ_VIN) {
             let vin = decode_linear11(vin_raw);
-            if vin < 0.0 || vin > 60.0 {
+            if !(0.0..=60.0).contains(&vin) {
                 continue;
             }
         }
@@ -402,7 +402,7 @@ fn probe_pmbus(bus: u32, addr: u16, vrm_index: u32) -> Option<PmbusDevice> {
     // Sanity check: try reading VIN and verify it decodes to a plausible value.
     let vin_raw = dev.read_word_data(PMBUS_READ_VIN).ok()?;
     let vin = decode_linear11(vin_raw);
-    if vin < 0.0 || vin > 60.0 {
+    if !(0.0..=60.0).contains(&vin) {
         log::debug!(
             "PMBus probe: bus {} addr {:#04x} VIN={:.2}V out of range",
             bus,

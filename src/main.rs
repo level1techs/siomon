@@ -86,8 +86,10 @@ fn run_monitor(cli: &Cli, label_overrides: std::collections::HashMap<String, Str
     #[cfg(feature = "tui")]
     {
         let state = sensors::poller::new_state();
+        let poll_stats = sensors::poller::new_poll_stats();
         let poller = sensors::poller::Poller::new(
             state.clone(),
+            poll_stats.clone(),
             cli.interval,
             cli.no_nvidia,
             cli.direct_io,
@@ -114,7 +116,7 @@ fn run_monitor(cli: &Cli, label_overrides: std::collections::HashMap<String, Str
             })
             .collect();
 
-        if let Err(e) = output::tui::run(state, cli.interval, alert_rules) {
+        if let Err(e) = output::tui::run(state, poll_stats, cli.interval, alert_rules) {
             eprintln!("TUI error: {e}");
         }
     }

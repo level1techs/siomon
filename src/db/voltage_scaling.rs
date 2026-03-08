@@ -9,8 +9,6 @@
 //! Without board-specific scaling, voltages like +12V and +5V appear as ~1V
 //! (their divided-down values at the chip).
 
-use crate::sensors::superio::chip_detect::ChipType;
-
 /// Voltage channel configuration for a single ADC input.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageChannel {

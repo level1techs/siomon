@@ -25,7 +25,7 @@ impl SensorId {
     }
 }
 
-fn natural_cmp_str(a: &str, b: &str) -> std::cmp::Ordering {
+pub fn natural_cmp_str(a: &str, b: &str) -> std::cmp::Ordering {
     let mut ai = a.chars().peekable();
     let mut bi = b.chars().peekable();
 
@@ -118,6 +118,41 @@ pub enum SensorCategory {
     Throughput,
     Memory,
     Other,
+}
+
+impl SensorCategory {
+    /// Stable display ordering for TUI tree layout.
+    pub fn sort_key(self) -> u8 {
+        match self {
+            Self::Temperature => 0,
+            Self::Voltage => 1,
+            Self::Fan => 2,
+            Self::Power => 3,
+            Self::Current => 4,
+            Self::Frequency => 5,
+            Self::Utilization => 6,
+            Self::Throughput => 7,
+            Self::Memory => 8,
+            Self::Other => 9,
+        }
+    }
+}
+
+impl std::fmt::Display for SensorCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Temperature => write!(f, "Temperature"),
+            Self::Voltage => write!(f, "Voltage"),
+            Self::Current => write!(f, "Current"),
+            Self::Power => write!(f, "Power"),
+            Self::Fan => write!(f, "Fan"),
+            Self::Frequency => write!(f, "Frequency"),
+            Self::Utilization => write!(f, "Utilization"),
+            Self::Throughput => write!(f, "Throughput"),
+            Self::Memory => write!(f, "Memory"),
+            Self::Other => write!(f, "Other"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

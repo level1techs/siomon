@@ -139,7 +139,7 @@ fn probe_spd5118(bus: u32, addr: u16, dimm_index: u32) -> Option<DimmSensor> {
     let temp_raw = dev.read_word_data(SPD5118_MR_TEMPERATURE).ok()?;
     let masked = temp_raw & 0x1FFF;
     let temp_c = masked as f64 * TEMP_LSB_RESOLUTION;
-    if temp_c > 150.0 || temp_c < -40.0 {
+    if !(-40.0..=150.0).contains(&temp_c) {
         log::debug!(
             "SPD5118 probe: bus {} addr {:#04x} temp {:.1}C out of range",
             bus,

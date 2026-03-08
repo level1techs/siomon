@@ -15,7 +15,8 @@ use ratatui::symbols;
 use ratatui::widgets::{Axis, Block, Borders, Cell, Chart, Dataset, Paragraph, Row, Table};
 use ratatui::Terminal;
 
-use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
+use crate::sensors::poller::PollStatsState;
 
 /// Maximum number of data points to retain per sensor for graphing.
 const GRAPH_HISTORY_LEN: usize = 300;
@@ -248,6 +249,7 @@ fn aggregate_key(label: &str, source: &str, chip: &str) -> String {
 /// shared `state` map on each tick (every `poll_interval_ms` milliseconds).
 pub fn run(
     state: Arc<RwLock<HashMap<SensorId, SensorReading>>>,
+    poll_stats: PollStatsState,
     poll_interval_ms: u64,
     alert_rules: Vec<crate::sensors::alerts::AlertRule>,
 ) -> io::Result<()> {
@@ -261,7 +263,13 @@ pub fn run(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, &state, poll_interval_ms, alert_rules);
+    let result = run_loop(
+        &mut terminal,
+        &state,
+        &poll_stats,
+        poll_interval_ms,
+        alert_rules,
+    );
 
     disable_raw_mode()?;
     execute!(
@@ -274,14 +282,10 @@ pub fn run(
     result
 }
 
-/// Group key derived from a SensorId: "source/chip"
-fn group_key(id: &SensorId) -> String {
-    format!("{}/{}", id.source, id.chip)
-}
-
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &Arc<RwLock<HashMap<SensorId, SensorReading>>>,
+    poll_stats: &PollStatsState,
     poll_interval_ms: u64,
     alert_rules: Vec<crate::sensors::alerts::AlertRule>,
 ) -> io::Result<()> {
@@ -314,14 +318,16 @@ fn run_loop(
             }
         }
 
-        // On first render, auto-collapse groups with > 32 entries
+        // On first render, auto-collapse categories with > 32 entries
         if !auto_collapsed && !snapshot.is_empty() {
             auto_collapsed = true;
-            let mut group_counts: HashMap<String, usize> = HashMap::new();
-            for (id, _) in &snapshot {
-                *group_counts.entry(group_key(id)).or_default() += 1;
+            let mut cat_counts: HashMap<String, usize> = HashMap::new();
+            for (id, reading) in &snapshot {
+                let ck = chip_key(id);
+                let catk = cat_key(&ck, reading.category);
+                *cat_counts.entry(catk).or_default() += 1;
             }
-            for (key, count) in &group_counts {
+            for (key, count) in &cat_counts {
                 if *count > 32 {
                     collapsed.insert(key.clone());
                 }
@@ -331,7 +337,7 @@ fn run_loop(
         // Record sensor values for graphing
         history.push(&snapshot);
 
-        let (display_rows, group_indices) = build_rows(&snapshot, &collapsed);
+        let (display_rows, group_indices, collapse_key_vec) = build_rows(&snapshot, &collapsed);
         last_total_rows = display_rows.len();
 
         // Clamp scroll and cursor
@@ -357,6 +363,30 @@ fn run_loop(
             Vec::new()
         };
 
+        // Build poll timing warning string
+        let poll_warning = {
+            let stats = poll_stats.read().unwrap_or_else(|e| e.into_inner());
+            if stats.cycle_duration_ms > 500 {
+                let slow: Vec<String> = stats
+                    .source_durations
+                    .iter()
+                    .filter(|&(_, &ms)| ms > 100)
+                    .map(|(name, ms)| format!("{name}: {ms}ms"))
+                    .collect();
+                format!(
+                    " | poll: {}ms [{}]",
+                    stats.cycle_duration_ms,
+                    if slow.is_empty() {
+                        "aggregate".into()
+                    } else {
+                        slow.join(", ")
+                    }
+                )
+            } else {
+                String::new()
+            }
+        };
+
         draw(
             terminal,
             display_rows,
@@ -368,6 +398,7 @@ fn run_loop(
             collapsed_count,
             &elapsed_str,
             &active_alerts,
+            &poll_warning,
             graph_visible,
             graph_mode,
             &graph_traces,
@@ -403,20 +434,19 @@ fn run_loop(
                         }
                     }
                     KeyCode::Enter | KeyCode::Char(' ') => {
-                        // Toggle collapse on the group at cursor
-                        if let Some(key) = get_group_at_cursor(&snapshot, &group_indices, cursor) {
-                            if collapsed.contains(&key) {
-                                collapsed.remove(&key);
+                        // Toggle collapse on the header at cursor
+                        if let Some(key) = collapse_key_vec.get(cursor) {
+                            if collapsed.contains(key) {
+                                collapsed.remove(key);
                             } else {
-                                collapsed.insert(key);
+                                collapsed.insert(key.clone());
                             }
                         }
                     }
                     KeyCode::Char('c') => {
-                        // Collapse all
-                        let groups = unique_groups(&snapshot);
-                        for g in groups {
-                            collapsed.insert(g);
+                        // Collapse all (both source and category levels)
+                        for key in all_collapse_keys(&snapshot) {
+                            collapsed.insert(key);
                         }
                     }
                     KeyCode::Char('e') => {
@@ -491,28 +521,38 @@ fn snapshot_sorted(
     entries
 }
 
-fn unique_groups(snapshot: &[(SensorId, SensorReading)]) -> Vec<String> {
-    let mut groups = Vec::new();
+/// Collect all collapse keys (source + chip + category) for "collapse all".
+fn all_collapse_keys(snapshot: &[(SensorId, SensorReading)]) -> Vec<String> {
+    let mut keys = Vec::new();
     let mut seen = HashSet::new();
-    for (id, _) in snapshot {
-        let key = group_key(id);
-        if seen.insert(key.clone()) {
-            groups.push(key);
+    for (id, reading) in snapshot {
+        let sk = &id.source;
+        if seen.insert(sk.clone()) {
+            keys.push(sk.clone());
+        }
+        let ck = chip_key(id);
+        if seen.insert(ck.clone()) {
+            keys.push(ck.clone());
+        }
+        let catk = cat_key(&ck, reading.category);
+        if seen.insert(catk.clone()) {
+            keys.push(catk);
         }
     }
-    groups
+    keys
 }
 
-fn get_group_at_cursor(
-    snapshot: &[(SensorId, SensorReading)],
-    _group_indices: &[usize],
-    cursor: usize,
-) -> Option<String> {
-    let groups = unique_groups(snapshot);
-    groups.get(cursor).cloned()
+/// Chip-level key: "source/chip"
+fn chip_key(id: &SensorId) -> String {
+    format!("{}/{}", id.source, id.chip)
 }
 
-struct GroupSummary {
+/// Category-level collapse key: "source/chip/CategoryName"
+fn cat_key(chip: &str, cat: SensorCategory) -> String {
+    format!("{}/{}", chip, cat)
+}
+
+struct Summary {
     count: usize,
     current_min: f64,
     current_max: f64,
@@ -523,145 +563,232 @@ struct GroupSummary {
     precision: usize,
 }
 
-fn compute_group_summaries(
-    snapshot: &[(SensorId, SensorReading)],
-) -> HashMap<String, GroupSummary> {
-    let mut summaries: HashMap<String, GroupSummary> = HashMap::new();
+fn accumulate(entry: &mut Summary, reading: &SensorReading) {
+    entry.count += 1;
+    entry.current_min = entry.current_min.min(reading.current);
+    entry.current_max = entry.current_max.max(reading.current);
+    entry.global_min = entry.global_min.min(reading.min);
+    entry.global_max = entry.global_max.max(reading.max);
+    entry.avg += (reading.avg - entry.avg) / entry.count as f64;
+}
+
+fn new_summary(reading: &SensorReading) -> Summary {
+    Summary {
+        count: 0,
+        current_min: f64::MAX,
+        current_max: f64::MIN,
+        global_min: f64::MAX,
+        global_max: f64::MIN,
+        avg: 0.0,
+        unit: format!("{}", reading.unit),
+        precision: format_precision(&reading.unit),
+    }
+}
+
+/// Compute summaries at source, chip, and category levels.
+fn compute_summaries(snapshot: &[(SensorId, SensorReading)]) -> HashMap<String, Summary> {
+    let mut summaries: HashMap<String, Summary> = HashMap::new();
 
     for (id, reading) in snapshot {
-        let key = group_key(id);
-        let entry = summaries.entry(key).or_insert_with(|| GroupSummary {
-            count: 0,
-            current_min: f64::MAX,
-            current_max: f64::MIN,
-            global_min: f64::MAX,
-            global_max: f64::MIN,
-            avg: 0.0,
-            unit: format!("{}", reading.unit),
-            precision: format_precision(&reading.unit),
-        });
+        let sk = id.source.clone();
+        let ck = chip_key(id);
+        let catk = cat_key(&ck, reading.category);
 
-        entry.count += 1;
-        entry.current_min = entry.current_min.min(reading.current);
-        entry.current_max = entry.current_max.max(reading.current);
-        entry.global_min = entry.global_min.min(reading.min);
-        entry.global_max = entry.global_max.max(reading.max);
-        // Running mean of averages
-        entry.avg += (reading.avg - entry.avg) / entry.count as f64;
+        for key in [&sk, &ck, &catk] {
+            let entry = summaries
+                .entry(key.clone())
+                .or_insert_with(|| new_summary(reading));
+            accumulate(entry, reading);
+        }
     }
 
     summaries
 }
 
-/// Build display rows with collapsible groups.
-/// Returns (rows, group_header_row_indices) where group_header_row_indices[i]
-/// is the row index of the i-th group header.
+/// Build a collapsed summary row with min-max range in the value columns.
+fn summary_row(header_text: String, style: Style, summary: Option<&Summary>) -> Row<'static> {
+    let summary_style = Style::default().fg(Color::DarkGray);
+    if let Some(s) = summary {
+        let p = s.precision;
+        Row::new(vec![
+            Cell::from(header_text).style(style),
+            Cell::from(format!(
+                "{:.prec$}\u{2013}{:.prec$}",
+                s.current_min,
+                s.current_max,
+                prec = p
+            ))
+            .style(summary_style),
+            Cell::from(format!("{:.prec$}", s.global_min, prec = p)).style(summary_style),
+            Cell::from(format!("{:.prec$}", s.global_max, prec = p)).style(summary_style),
+            Cell::from(format!("{:.prec$}", s.avg, prec = p)).style(summary_style),
+            Cell::from(s.unit.clone()).style(summary_style),
+        ])
+    } else {
+        Row::new(vec![
+            Cell::from(header_text).style(style),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+        ])
+    }
+}
+
+/// Build an expanded header row (no summary values).
+fn header_row(header_text: String, style: Style) -> Row<'static> {
+    Row::new(vec![
+        Cell::from(header_text).style(style),
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(""),
+        Cell::from(""),
+    ])
+}
+
+/// Sort snapshot indices: source (natural), chip (natural), category sort_key, sensor (natural).
+fn sorted_indices(snapshot: &[(SensorId, SensorReading)]) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..snapshot.len()).collect();
+    indices.sort_by(|&a, &b| {
+        let (a_id, a_r) = &snapshot[a];
+        let (b_id, b_r) = &snapshot[b];
+        sensor::natural_cmp_str(&a_id.source, &b_id.source)
+            .then_with(|| sensor::natural_cmp_str(&a_id.chip, &b_id.chip))
+            .then_with(|| a_r.category.sort_key().cmp(&b_r.category.sort_key()))
+            .then_with(|| a_id.natural_cmp(b_id))
+    });
+    indices
+}
+
+/// Build display rows with 4-level collapsible tree:
+///   Level 1: source (yellow bold)        — "hwmon", "cpu", "ipmi", etc.
+///   Level 2: chip (white bold)           — "nct6798d", "nvme0", "bmc", etc.
+///   Level 3: category (cyan)             — "Temperature", "Voltage", etc.
+///   Level 4: individual sensor readings
+///
+/// Returns (rows, header_row_indices, collapse_keys).
 fn build_rows(
     snapshot: &[(SensorId, SensorReading)],
     collapsed: &HashSet<String>,
-) -> (Vec<Row<'static>>, Vec<usize>) {
-    // Pre-compute per-group summary stats
-    let group_summaries = compute_group_summaries(snapshot);
+) -> (Vec<Row<'static>>, Vec<usize>, Vec<String>) {
+    let order = sorted_indices(snapshot);
+    let summaries = compute_summaries(snapshot);
 
-    let mut rows = Vec::new();
-    let mut group_indices = Vec::new();
-    let mut current_group: Option<String> = None;
+    let mut rows: Vec<Row<'static>> = Vec::new();
+    let mut header_indices = Vec::new();
+    let mut collapse_keys = Vec::new();
 
-    for (id, reading) in snapshot {
-        let key = group_key(id);
+    let mut cur_source: Option<String> = None;
+    let mut cur_chip: Option<String> = None;
+    let mut cur_cat: Option<String> = None;
 
-        if current_group.as_ref() != Some(&key) {
-            current_group = Some(key.clone());
+    let source_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let chip_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let cat_style = Style::default().fg(Color::Cyan);
 
-            let is_collapsed = collapsed.contains(&key);
-            let summary = group_summaries.get(&key);
-            let count = summary.map(|s| s.count).unwrap_or(0);
+    for &idx in &order {
+        let (id, reading) = &snapshot[idx];
+        let sk = &id.source;
+        let ck = chip_key(id);
+        let catk = cat_key(&ck, reading.category);
+
+        // Level 1: Source header
+        if cur_source.as_ref() != Some(sk) {
+            cur_source = Some(sk.clone());
+            cur_chip = None;
+            cur_cat = None;
+
+            let is_collapsed = collapsed.contains(sk);
+            let count = summaries.get(sk).map(|s| s.count).unwrap_or(0);
             let arrow = if is_collapsed { "\u{25b6}" } else { "\u{25bc}" };
-            let header_text = format!(
-                " {arrow} {key} ({count} sensor{})",
+            let text = format!(
+                " {arrow} {sk} ({count} sensor{})",
                 if count == 1 { "" } else { "s" }
             );
 
-            group_indices.push(rows.len());
-
-            let header_style = Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD);
-            let summary_style = Style::default().fg(Color::DarkGray);
-
-            let header_row = if is_collapsed {
-                if let Some(s) = summary {
-                    let precision = s.precision;
-                    Row::new(vec![
-                        Cell::from(header_text).style(header_style),
-                        Cell::from(format!(
-                            "{:.prec$}\u{2013}{:.prec$}",
-                            s.current_min,
-                            s.current_max,
-                            prec = precision
-                        ))
-                        .style(summary_style),
-                        Cell::from(format!("{:.prec$}", s.global_min, prec = precision))
-                            .style(summary_style),
-                        Cell::from(format!("{:.prec$}", s.global_max, prec = precision))
-                            .style(summary_style),
-                        Cell::from(format!("{:.prec$}", s.avg, prec = precision))
-                            .style(summary_style),
-                        Cell::from(s.unit.clone()).style(summary_style),
-                    ])
-                } else {
-                    Row::new(vec![
-                        Cell::from(header_text).style(header_style),
-                        Cell::from(""),
-                        Cell::from(""),
-                        Cell::from(""),
-                        Cell::from(""),
-                        Cell::from(""),
-                    ])
-                }
-            } else {
-                Row::new(vec![
-                    Cell::from(header_text).style(header_style),
-                    Cell::from(""),
-                    Cell::from(""),
-                    Cell::from(""),
-                    Cell::from(""),
-                    Cell::from(""),
-                ])
-            };
-            rows.push(header_row);
+            header_indices.push(rows.len());
+            collapse_keys.push(sk.clone());
 
             if is_collapsed {
+                rows.push(summary_row(text, source_style, summaries.get(sk)));
                 continue;
+            } else {
+                rows.push(header_row(text, source_style));
             }
         }
-
-        let key = group_key(id);
-        if collapsed.contains(&key) {
+        if collapsed.contains(sk) {
             continue;
         }
 
-        let precision = format_precision(&reading.unit);
-        let current_str = format!("{:.prec$}", reading.current, prec = precision);
-        let min_str = format!("{:.prec$}", reading.min, prec = precision);
-        let max_str = format!("{:.prec$}", reading.max, prec = precision);
-        let avg_str = format!("{:.prec$}", reading.avg, prec = precision);
-        let unit_str = format!("{}", reading.unit);
+        // Level 2: Chip header
+        if cur_chip.as_ref() != Some(&ck) {
+            cur_chip = Some(ck.clone());
+            cur_cat = None;
 
+            let is_collapsed = collapsed.contains(&ck);
+            let count = summaries.get(&ck).map(|s| s.count).unwrap_or(0);
+            let arrow = if is_collapsed { "\u{25b6}" } else { "\u{25bc}" };
+            let text = format!("   {arrow} {} ({count})", id.chip);
+
+            header_indices.push(rows.len());
+            collapse_keys.push(ck.clone());
+
+            if is_collapsed {
+                rows.push(summary_row(text, chip_style, summaries.get(&ck)));
+                continue;
+            } else {
+                rows.push(header_row(text, chip_style));
+            }
+        }
+        if collapsed.contains(&ck) {
+            continue;
+        }
+
+        // Level 3: Category header
+        if cur_cat.as_ref() != Some(&catk) {
+            cur_cat = Some(catk.clone());
+
+            let is_collapsed = collapsed.contains(&catk);
+            let count = summaries.get(&catk).map(|s| s.count).unwrap_or(0);
+            let arrow = if is_collapsed { "\u{25b6}" } else { "\u{25bc}" };
+            let text = format!("     {arrow} {} ({count})", reading.category);
+
+            header_indices.push(rows.len());
+            collapse_keys.push(catk.clone());
+
+            if is_collapsed {
+                rows.push(summary_row(text, cat_style, summaries.get(&catk)));
+                continue;
+            } else {
+                rows.push(header_row(text, cat_style));
+            }
+        }
+        if collapsed.contains(&catk) {
+            continue;
+        }
+
+        // Level 4: Sensor row
+        let precision = format_precision(&reading.unit);
         let style = value_style(reading);
 
         let row = Row::new(vec![
-            Cell::from(format!("  {}", reading.label)),
-            Cell::from(current_str).style(style),
-            Cell::from(min_str),
-            Cell::from(max_str),
-            Cell::from(avg_str),
-            Cell::from(unit_str),
+            Cell::from(format!("       {}", reading.label)),
+            Cell::from(format!("{:.prec$}", reading.current, prec = precision)).style(style),
+            Cell::from(format!("{:.prec$}", reading.min, prec = precision)),
+            Cell::from(format!("{:.prec$}", reading.max, prec = precision)),
+            Cell::from(format!("{:.prec$}", reading.avg, prec = precision)),
+            Cell::from(format!("{}", reading.unit)),
         ]);
         rows.push(row);
     }
 
-    (rows, group_indices)
+    (rows, header_indices, collapse_keys)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -676,6 +803,7 @@ fn draw(
     collapsed_count: usize,
     elapsed_str: &str,
     active_alerts: &[String],
+    poll_warning: &str,
     graph_visible: bool,
     graph_mode: GraphMode,
     graph_traces: &[(String, Vec<(f64, f64)>)],
@@ -814,11 +942,7 @@ fn draw(
                 .map(|(i, (label, points))| {
                     let color = GRAPH_COLORS[i % GRAPH_COLORS.len()];
                     // Truncate label for dataset name
-                    let short = if label.len() > 16 {
-                        format!("{}...", &label[..13])
-                    } else {
-                        label.clone()
-                    };
+                    let short = truncate_label(label, 16);
                     Dataset::default()
                         .name(short)
                         .marker(symbols::Marker::Braille)
@@ -894,11 +1018,7 @@ fn draw(
             for (i, (label, points)) in graph_traces.iter().enumerate() {
                 let color = GRAPH_COLORS[i % GRAPH_COLORS.len()];
                 let current = points.last().map(|p| p.1).unwrap_or(0.0);
-                let short_label = if label.len() > 14 {
-                    format!("{}...", &label[..11])
-                } else {
-                    label.clone()
-                };
+                let short_label = truncate_label(label, 14);
                 legend_lines.push(ratatui::text::Line::from(vec![
                     ratatui::text::Span::styled(
                         "\u{2501}\u{2501} ",
@@ -935,13 +1055,13 @@ fn draw(
         let graph_hint = if graph_visible { "" } else { " | g: graph" };
         let status = if active_alerts.is_empty() {
             format!(
-                " q: quit | \u{2191}\u{2193}: navigate | Enter: toggle | c/e: collapse/expand{} | Sensors: {} | Samples: {}",
-                graph_hint, sensor_count, max_samples
+                " q: quit | \u{2191}\u{2193}: navigate | Enter: toggle | c/e: collapse/expand{} | Sensors: {} | Samples: {}{}",
+                graph_hint, sensor_count, max_samples, poll_warning
             )
         } else {
-            format!(" \u{26a0} {} | {}", active_alerts.join(" | "), {
+            format!(" \u{26a0} {} | {}{}", active_alerts.join(" | "), {
                 format!("Sensors: {} | Samples: {}", sensor_count, max_samples)
-            })
+            }, poll_warning)
         };
         let status_style = if active_alerts.is_empty() {
             Style::default().fg(Color::DarkGray).bg(Color::Black)
@@ -956,6 +1076,17 @@ fn draw(
     })?;
 
     Ok(())
+}
+
+/// Truncate a label to `max_chars` characters, appending "..." if needed.
+/// Uses char boundaries to avoid panicking on multi-byte UTF-8.
+fn truncate_label(label: &str, max_chars: usize) -> String {
+    if label.chars().count() <= max_chars {
+        label.to_string()
+    } else {
+        let truncated: String = label.chars().take(max_chars - 3).collect();
+        format!("{truncated}...")
+    }
 }
 
 fn format_precision(unit: &SensorUnit) -> usize {

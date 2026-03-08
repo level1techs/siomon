@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::model::sensor::{SensorId, SensorReading};
 use crate::sensors::{
@@ -14,8 +14,29 @@ pub fn new_state() -> SensorState {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PollStats {
+    pub cycle_duration_ms: u64,
+    pub source_durations: HashMap<String, u64>, // name -> ms
+}
+
+pub type PollStatsState = Arc<RwLock<PollStats>>;
+
+pub fn new_poll_stats() -> PollStatsState {
+    Arc::new(RwLock::new(PollStats::default()))
+}
+
+macro_rules! timed_poll {
+    ($name:expr, $src:expr, $readings:expr, $durations:expr) => {{
+        let t = Instant::now();
+        $readings.extend($src.poll());
+        $durations.insert($name.into(), t.elapsed().as_millis() as u64);
+    }};
+}
+
 pub struct Poller {
     state: SensorState,
+    poll_stats: PollStatsState,
     interval: Duration,
     no_nvidia: bool,
     direct_io: bool,
@@ -25,6 +46,7 @@ pub struct Poller {
 impl Poller {
     pub fn new(
         state: SensorState,
+        poll_stats: PollStatsState,
         interval_ms: u64,
         no_nvidia: bool,
         direct_io: bool,
@@ -32,6 +54,7 @@ impl Poller {
     ) -> Self {
         Self {
             state,
+            poll_stats,
             interval: Duration::from_millis(interval_ms),
             no_nvidia,
             direct_io,
@@ -94,9 +117,11 @@ impl Poller {
             (None, None)
         };
 
-        // IPMI and HSMP — always try (don't require --direct-io)
-        let mut ipmi_src = super::ipmi::IpmiSource::discover();
+        // HSMP — always try (don't require --direct-io)
         let hsmp_src = super::hsmp::HsmpSource::discover();
+
+        // IPMI — native ioctl via ipmi-rs, fast enough for the main loop
+        let mut ipmi_src = super::ipmi::IpmiSource::discover();
 
         log::info!(
             "Sensor poller started: {} hwmon chips, {} hwmon sensors, {} nct chips, {} ite chips, i2c: {}, ipmi: {}, hsmp: {}",
@@ -109,35 +134,62 @@ impl Poller {
             if hsmp_src.is_available() { "yes" } else { "no" },
         );
 
+        let mut durations: HashMap<String, u64> = HashMap::new();
         while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let cycle_start = Instant::now();
             let mut new_readings: Vec<(SensorId, SensorReading)> = Vec::new();
+            durations.clear();
 
-            // Collect from all sources
-            new_readings.extend(hwmon_src.poll());
-            new_readings.extend(freq_src.poll());
-            new_readings.extend(util_src.poll());
-            new_readings.extend(gpu_src.poll());
-            new_readings.extend(rapl_src.poll());
-            new_readings.extend(disk_src.poll());
-            new_readings.extend(net_src.poll());
+            // Collect from all fast sources
+            timed_poll!("hwmon", hwmon_src, new_readings, durations);
+            timed_poll!("cpufreq", freq_src, new_readings, durations);
+            timed_poll!("cpu_util", util_src, new_readings, durations);
+            timed_poll!("gpu", gpu_src, new_readings, durations);
+            timed_poll!("rapl", rapl_src, new_readings, durations);
+            timed_poll!("disk", disk_src, new_readings, durations);
+            timed_poll!("network", net_src, new_readings, durations);
 
             // Direct I/O sources
             for sio in &nct_src {
+                let t = Instant::now();
                 new_readings.extend(sio.poll());
+                *durations.entry("superio".into()).or_default() += t.elapsed().as_millis() as u64;
             }
             for sio in &ite_src {
+                let t = Instant::now();
                 new_readings.extend(sio.poll());
+                *durations.entry("superio".into()).or_default() += t.elapsed().as_millis() as u64;
             }
             if let Some(ref i2c) = i2c_src {
-                new_readings.extend(i2c.poll());
+                timed_poll!("i2c", i2c, new_readings, durations);
             }
             if let Some(ref pmbus) = pmbus_src {
-                new_readings.extend(pmbus.poll());
+                timed_poll!("pmbus", pmbus, new_readings, durations);
             }
 
-            // IPMI and HSMP
-            new_readings.extend(ipmi_src.poll());
-            new_readings.extend(hsmp_src.poll());
+            // HSMP and IPMI (both fast — direct ioctl)
+            timed_poll!("hsmp", hsmp_src, new_readings, durations);
+            timed_poll!("ipmi", ipmi_src, new_readings, durations);
+
+            let cycle_ms = cycle_start.elapsed().as_millis() as u64;
+
+            // Log warning for slow poll cycles
+            if cycle_ms > 500 {
+                let slow: Vec<String> = durations
+                    .iter()
+                    .filter(|&(_, &ms)| ms > 100)
+                    .map(|(name, ms)| format!("{name}: {ms}ms"))
+                    .collect();
+                log::warn!(
+                    "Slow poll cycle: {}ms [{}]",
+                    cycle_ms,
+                    if slow.is_empty() {
+                        "no single source >100ms".into()
+                    } else {
+                        slow.join(", ")
+                    }
+                );
+            }
 
             // Update shared state
             if let Ok(mut state) = self.state.write() {
@@ -148,6 +200,12 @@ impl Poller {
                         state.insert(id, new_reading);
                     }
                 }
+            }
+
+            // Update poll stats
+            if let Ok(mut stats) = self.poll_stats.write() {
+                stats.cycle_duration_ms = cycle_ms;
+                stats.source_durations.clone_from(&durations);
             }
 
             thread::sleep(self.interval);
