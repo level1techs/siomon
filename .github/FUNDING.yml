@@ -1,7 +1,7 @@
 # These are supported funding model platforms
 
-github: [wendelltron, level1techs]
-patreon: [level1]
+github: ['wendelltron', 'level1techs']
+patreon: '[level1']
 open_collective: # Replace with a single Open Collective username
 ko_fi: # Replace with a single Ko-fi username
 tidelift: # Replace with a single Tidelift platform-name/package-name e.g., npm/babel
@@ -12,4 +12,4 @@ lfx_crowdfunding: # Replace with a single LFX Crowdfunding project-name e.g., cl
 polar: # Replace with a single Polar username
 buy_me_a_coffee: # Replace with a single Buy Me a Coffee username
 thanks_dev: # Replace with a single thanks.dev username
-custom: ['https://www.floatplane.com/channel/level1techs/home']
+custom: ['https://www.floatplane.com/channel/level1techs/home','https://www.patreon.com/level1']
