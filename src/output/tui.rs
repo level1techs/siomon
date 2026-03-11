@@ -714,15 +714,48 @@ fn sorted_indices(snapshot: &[(SensorId, SensorReading)]) -> Vec<usize> {
 }
 
 /// Check whether a sensor matches the active filter (case-insensitive).
-/// Matches against sensor label, chip name, and source name.
+/// Matches against sensor label, sensor key, chip name, and source name.
+///
+/// `filter_lc` must already be ASCII-lowercased by the caller so that this
+/// function can perform an allocation-free search on each field.
 fn sensor_matches_filter(id: &SensorId, reading: &SensorReading, filter_lc: &str) -> bool {
     if filter_lc.is_empty() {
         return true;
     }
-    reading.label.to_lowercase().contains(filter_lc)
-        || id.chip.to_lowercase().contains(filter_lc)
-        || id.source.to_lowercase().contains(filter_lc)
-        || id.sensor.to_lowercase().contains(filter_lc)
+    ascii_contains_ignore_case(&reading.label, filter_lc)
+        || ascii_contains_ignore_case(&id.chip, filter_lc)
+        || ascii_contains_ignore_case(&id.source, filter_lc)
+        || ascii_contains_ignore_case(&id.sensor, filter_lc)
+}
+
+/// ASCII-only case-insensitive substring search without heap allocation.
+///
+/// `needle_lc` must be pre-lowercased (ASCII). Matches by comparing one
+/// ASCII byte at a time, leaving non-ASCII bytes unchanged so that their
+/// original byte offsets are preserved — a property `highlight_match` relies on.
+fn ascii_contains_ignore_case(haystack: &str, needle_lc: &str) -> bool {
+    let needle = needle_lc.as_bytes();
+    let hay = haystack.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > hay.len() {
+        return false;
+    }
+    for i in 0..=(hay.len() - needle.len()) {
+        let mut j = 0;
+        while j < needle.len() {
+            let h = if hay[i + j].is_ascii() { hay[i + j].to_ascii_lowercase() } else { hay[i + j] };
+            if h != needle[j] {
+                break;
+            }
+            j += 1;
+        }
+        if j == needle.len() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Build display rows with 4-level collapsible tree:
@@ -878,9 +911,13 @@ fn build_rows(
 
 /// Return the label with the matched substring wrapped in [brackets] for visual
 /// emphasis, keeping the 7-space indent used for sensor rows.
+///
+/// Uses `to_ascii_lowercase` to find the match position so that the resulting
+/// byte offset is valid for slicing the original string even when it contains
+/// non-ASCII characters (ASCII lowercasing never changes byte length).
 fn highlight_match(label: &str, filter_lc: &str) -> String {
-    let label_lc = label.to_lowercase();
-    if let Some(pos) = label_lc.find(filter_lc) {
+    let label_ascii_lc = label.to_ascii_lowercase();
+    if let Some(pos) = label_ascii_lc.find(filter_lc) {
         let end = pos + filter_lc.len();
         format!(
             "       {}[{}]{}",
@@ -1053,7 +1090,7 @@ fn draw(
             (chunks[2], None)
         };
 
-        let graph_status_chunk = if graph_visible {
+        if graph_visible {
             // Split graph area: chart on left, legend on right
             let graph_layout = Layout::default()
                 .direction(Direction::Horizontal)
@@ -1170,12 +1207,7 @@ fn draw(
                     .border_style(Style::default().fg(Color::DarkGray)),
             );
             frame.render_widget(legend, graph_layout[1]);
-
-            chunks[2] // graph chunk — we already computed status_chunk above
-        } else {
-            chunks[1] // no-op; just reference table chunk (unused)
-        };
-        let _ = graph_status_chunk; // suppress unused warning when graph is off
+        }
 
         // Filter bar (between table/graph and status)
         if let Some(fc) = filter_chunk_opt {
