@@ -297,6 +297,10 @@ fn run_loop(
     let mut alert_engine = crate::sensors::alerts::AlertEngine::new(alert_rules);
     let mut active_alerts: Vec<String> = Vec::new();
 
+    // Search/filter state
+    let mut filter_mode = false;
+    let mut filter_query = String::new();
+
     // Graph state
     let mut graph_visible = false;
     let mut graph_mode = GraphMode::Temperature;
@@ -337,7 +341,9 @@ fn run_loop(
         // Record sensor values for graphing
         history.push(&snapshot);
 
-        let (display_rows, group_indices, collapse_key_vec) = build_rows(&snapshot, &collapsed);
+        let filter_lc = filter_query.to_lowercase();
+        let (display_rows, group_indices, collapse_key_vec) =
+            build_rows(&snapshot, &collapsed, &filter_lc);
         last_total_rows = display_rows.len();
 
         // Clamp scroll and cursor
@@ -402,100 +408,145 @@ fn run_loop(
             graph_visible,
             graph_mode,
             &graph_traces,
+            filter_mode,
+            &filter_query,
         )?;
 
         let timeout = Duration::from_millis(poll_interval_ms);
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if cursor > 0 {
-                            cursor -= 1;
-                            // Auto-scroll to keep cursor visible
-                            if let Some(&row_idx) = group_indices.get(cursor) {
-                                if row_idx < scroll_offset {
-                                    scroll_offset = row_idx;
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if filter_mode {
+                        // Filter input mode: capture characters, Esc/Enter to exit
+                        match key.code {
+                            KeyCode::Esc => {
+                                filter_mode = false;
+                                filter_query.clear();
+                                scroll_offset = 0;
+                                cursor = 0;
+                            }
+                            KeyCode::Enter => {
+                                filter_mode = false;
+                                // Keep filter active; press Esc to clear
+                            }
+                            KeyCode::Backspace => {
+                                filter_query.pop();
+                                scroll_offset = 0;
+                                cursor = 0;
+                            }
+                            KeyCode::Char(c) => {
+                                filter_query.push(c);
+                                scroll_offset = 0;
+                                cursor = 0;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        match key.code {
+                            KeyCode::Char('q') => return Ok(()),
+                            KeyCode::Esc => {
+                                if !filter_query.is_empty() {
+                                    // Esc clears active filter
+                                    filter_query.clear();
+                                    scroll_offset = 0;
+                                    cursor = 0;
+                                } else {
+                                    return Ok(());
                                 }
                             }
-                        }
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if cursor + 1 < group_indices.len() {
-                            cursor += 1;
-                            // Auto-scroll down
-                            if let Some(&row_idx) = group_indices.get(cursor) {
-                                let term_height = terminal.size()?.height as usize;
-                                let visible = term_height.saturating_sub(6);
-                                if row_idx >= scroll_offset + visible {
-                                    scroll_offset = row_idx.saturating_sub(visible / 2);
+                            KeyCode::Char('/') => {
+                                filter_mode = true;
+                                // Don't clear filter_query so user can refine existing filter
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                if cursor > 0 {
+                                    cursor -= 1;
+                                    // Auto-scroll to keep cursor visible
+                                    if let Some(&row_idx) = group_indices.get(cursor) {
+                                        if row_idx < scroll_offset {
+                                            scroll_offset = row_idx;
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    }
-                    KeyCode::Enter | KeyCode::Char(' ') => {
-                        // Toggle collapse on the header at cursor
-                        if let Some(key) = collapse_key_vec.get(cursor) {
-                            if collapsed.contains(key) {
-                                collapsed.remove(key);
-                            } else {
-                                collapsed.insert(key.clone());
-                            }
-                        }
-                    }
-                    KeyCode::Char('c') => {
-                        // Collapse all (both source and category levels)
-                        for key in all_collapse_keys(&snapshot) {
-                            collapsed.insert(key);
-                        }
-                    }
-                    KeyCode::Char('e') => {
-                        // Expand all
-                        collapsed.clear();
-                    }
-                    KeyCode::Char('g') => {
-                        graph_visible = !graph_visible;
-                    }
-                    KeyCode::Tab | KeyCode::Right if graph_visible => {
-                        graph_mode = graph_mode.next();
-                    }
-                    KeyCode::BackTab | KeyCode::Left if graph_visible => {
-                        graph_mode = graph_mode.prev();
-                    }
-                    KeyCode::PageUp => {
-                        scroll_offset = scroll_offset.saturating_sub(20);
-                        // Move cursor up to nearest visible group
-                        while cursor > 0 {
-                            if let Some(&ri) = group_indices.get(cursor) {
-                                if ri >= scroll_offset {
-                                    break;
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if cursor + 1 < group_indices.len() {
+                                    cursor += 1;
+                                    // Auto-scroll down
+                                    if let Some(&row_idx) = group_indices.get(cursor) {
+                                        let term_height = terminal.size()?.height as usize;
+                                        let visible = term_height.saturating_sub(6);
+                                        if row_idx >= scroll_offset + visible {
+                                            scroll_offset = row_idx.saturating_sub(visible / 2);
+                                        }
+                                    }
                                 }
                             }
-                            cursor -= 1;
-                        }
-                    }
-                    KeyCode::PageDown => {
-                        scroll_offset = scroll_offset.saturating_add(20);
-                        // Move cursor down to nearest visible group
-                        while cursor + 1 < group_indices.len() {
-                            if let Some(&ri) = group_indices.get(cursor) {
-                                if ri >= scroll_offset {
-                                    break;
+                            KeyCode::Enter | KeyCode::Char(' ') => {
+                                // Toggle collapse on the header at cursor
+                                if let Some(key) = collapse_key_vec.get(cursor) {
+                                    if collapsed.contains(key) {
+                                        collapsed.remove(key);
+                                    } else {
+                                        collapsed.insert(key.clone());
+                                    }
                                 }
                             }
-                            cursor += 1;
+                            KeyCode::Char('c') => {
+                                // Collapse all (both source and category levels)
+                                for key in all_collapse_keys(&snapshot) {
+                                    collapsed.insert(key);
+                                }
+                            }
+                            KeyCode::Char('e') => {
+                                // Expand all
+                                collapsed.clear();
+                            }
+                            KeyCode::Char('g') => {
+                                graph_visible = !graph_visible;
+                            }
+                            KeyCode::Tab | KeyCode::Right if graph_visible => {
+                                graph_mode = graph_mode.next();
+                            }
+                            KeyCode::BackTab | KeyCode::Left if graph_visible => {
+                                graph_mode = graph_mode.prev();
+                            }
+                            KeyCode::PageUp => {
+                                scroll_offset = scroll_offset.saturating_sub(20);
+                                // Move cursor up to nearest visible group
+                                while cursor > 0 {
+                                    if let Some(&ri) = group_indices.get(cursor) {
+                                        if ri >= scroll_offset {
+                                            break;
+                                        }
+                                    }
+                                    cursor -= 1;
+                                }
+                            }
+                            KeyCode::PageDown => {
+                                scroll_offset = scroll_offset.saturating_add(20);
+                                // Move cursor down to nearest visible group
+                                while cursor + 1 < group_indices.len() {
+                                    if let Some(&ri) = group_indices.get(cursor) {
+                                        if ri >= scroll_offset {
+                                            break;
+                                        }
+                                    }
+                                    cursor += 1;
+                                }
+                            }
+                            KeyCode::Home => {
+                                scroll_offset = 0;
+                                cursor = 0;
+                            }
+                            KeyCode::End => {
+                                scroll_offset = last_total_rows.saturating_sub(1);
+                                cursor = group_indices.len().saturating_sub(1);
+                            }
+                            _ => {}
                         }
                     }
-                    KeyCode::Home => {
-                        scroll_offset = 0;
-                        cursor = 0;
-                    }
-                    KeyCode::End => {
-                        scroll_offset = last_total_rows.saturating_sub(1);
-                        cursor = group_indices.len().saturating_sub(1);
-                    }
-                    _ => {}
-                },
+                }
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => {
                         scroll_offset = scroll_offset.saturating_sub(3);
@@ -662,16 +713,32 @@ fn sorted_indices(snapshot: &[(SensorId, SensorReading)]) -> Vec<usize> {
     indices
 }
 
+/// Check whether a sensor matches the active filter (case-insensitive).
+/// Matches against sensor label, chip name, and source name.
+fn sensor_matches_filter(id: &SensorId, reading: &SensorReading, filter_lc: &str) -> bool {
+    if filter_lc.is_empty() {
+        return true;
+    }
+    reading.label.to_lowercase().contains(filter_lc)
+        || id.chip.to_lowercase().contains(filter_lc)
+        || id.source.to_lowercase().contains(filter_lc)
+        || id.sensor.to_lowercase().contains(filter_lc)
+}
+
 /// Build display rows with 4-level collapsible tree:
 ///   Level 1: source (yellow bold)        — "hwmon", "cpu", "ipmi", etc.
 ///   Level 2: chip (white bold)           — "nct6798d", "nvme0", "bmc", etc.
 ///   Level 3: category (cyan)             — "Temperature", "Voltage", etc.
 ///   Level 4: individual sensor readings
 ///
+/// When `filter_lc` is non-empty, only groups containing matching sensors are
+/// shown and those groups are always expanded regardless of `collapsed`.
+///
 /// Returns (rows, header_row_indices, collapse_keys).
 fn build_rows(
     snapshot: &[(SensorId, SensorReading)],
     collapsed: &HashSet<String>,
+    filter_lc: &str,
 ) -> (Vec<Row<'static>>, Vec<usize>, Vec<String>) {
     let order = sorted_indices(snapshot);
     let summaries = compute_summaries(snapshot);
@@ -694,9 +761,21 @@ fn build_rows(
 
     for &idx in &order {
         let (id, reading) = &snapshot[idx];
+
+        // Skip sensors that don't match the active filter
+        if !sensor_matches_filter(id, reading, filter_lc) {
+            continue;
+        }
+
         let sk = &id.source;
         let ck = chip_key(id);
         let catk = cat_key(&ck, reading.category);
+
+        // When a filter is active, override collapse state so matching sensors
+        // are always visible.
+        let effective_collapsed = |key: &str| -> bool {
+            if !filter_lc.is_empty() { false } else { collapsed.contains(key) }
+        };
 
         // Level 1: Source header
         if cur_source.as_ref() != Some(sk) {
@@ -704,7 +783,7 @@ fn build_rows(
             cur_chip = None;
             cur_cat = None;
 
-            let is_collapsed = collapsed.contains(sk);
+            let is_collapsed = effective_collapsed(sk);
             let count = summaries.get(sk).map(|s| s.count).unwrap_or(0);
             let arrow = if is_collapsed { "\u{25b6}" } else { "\u{25bc}" };
             let text = format!(
@@ -722,7 +801,7 @@ fn build_rows(
                 rows.push(header_row(text, source_style));
             }
         }
-        if collapsed.contains(sk) {
+        if effective_collapsed(sk) {
             continue;
         }
 
@@ -731,7 +810,7 @@ fn build_rows(
             cur_chip = Some(ck.clone());
             cur_cat = None;
 
-            let is_collapsed = collapsed.contains(&ck);
+            let is_collapsed = effective_collapsed(&ck);
             let count = summaries.get(&ck).map(|s| s.count).unwrap_or(0);
             let arrow = if is_collapsed { "\u{25b6}" } else { "\u{25bc}" };
             let text = format!("   {arrow} {} ({count})", id.chip);
@@ -746,7 +825,7 @@ fn build_rows(
                 rows.push(header_row(text, chip_style));
             }
         }
-        if collapsed.contains(&ck) {
+        if effective_collapsed(&ck) {
             continue;
         }
 
@@ -754,7 +833,7 @@ fn build_rows(
         if cur_cat.as_ref() != Some(&catk) {
             cur_cat = Some(catk.clone());
 
-            let is_collapsed = collapsed.contains(&catk);
+            let is_collapsed = effective_collapsed(&catk);
             let count = summaries.get(&catk).map(|s| s.count).unwrap_or(0);
             let arrow = if is_collapsed { "\u{25b6}" } else { "\u{25bc}" };
             let text = format!("     {arrow} {} ({count})", reading.category);
@@ -769,16 +848,22 @@ fn build_rows(
                 rows.push(header_row(text, cat_style));
             }
         }
-        if collapsed.contains(&catk) {
+        if effective_collapsed(&catk) {
             continue;
         }
 
-        // Level 4: Sensor row
+        // Level 4: Sensor row — highlight matched characters when filter is active
         let precision = format_precision(&reading.unit);
         let style = value_style(reading);
+        let label_text = if !filter_lc.is_empty() {
+            // Mark matches visually with surrounding brackets
+            highlight_match(&reading.label, filter_lc)
+        } else {
+            format!("       {}", reading.label)
+        };
 
         let row = Row::new(vec![
-            Cell::from(format!("       {}", reading.label)),
+            Cell::from(label_text),
             Cell::from(format!("{:.prec$}", reading.current, prec = precision)).style(style),
             Cell::from(format!("{:.prec$}", reading.min, prec = precision)),
             Cell::from(format!("{:.prec$}", reading.max, prec = precision)),
@@ -789,6 +874,23 @@ fn build_rows(
     }
 
     (rows, header_indices, collapse_keys)
+}
+
+/// Return the label with the matched substring wrapped in [brackets] for visual
+/// emphasis, keeping the 7-space indent used for sensor rows.
+fn highlight_match(label: &str, filter_lc: &str) -> String {
+    let label_lc = label.to_lowercase();
+    if let Some(pos) = label_lc.find(filter_lc) {
+        let end = pos + filter_lc.len();
+        format!(
+            "       {}[{}]{}",
+            &label[..pos],
+            &label[pos..end],
+            &label[end..]
+        )
+    } else {
+        format!("       {label}")
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -807,23 +909,31 @@ fn draw(
     graph_visible: bool,
     graph_mode: GraphMode,
     graph_traces: &[(String, Vec<(f64, f64)>)],
+    filter_mode: bool,
+    filter_query: &str,
 ) -> io::Result<()> {
     let total_groups = group_indices.len();
 
     terminal.draw(|frame| {
         let size = frame.area();
 
+        // When a filter is active (or being typed), show a filter bar above the status bar.
+        let show_filter_bar = filter_mode || !filter_query.is_empty();
+        let filter_bar_height = if show_filter_bar { 1 } else { 0 };
+
         let constraints = if graph_visible {
             vec![
                 Constraint::Length(3),
                 Constraint::Min(10),
                 Constraint::Percentage(35),
+                Constraint::Length(filter_bar_height),
                 Constraint::Length(1),
             ]
         } else {
             vec![
                 Constraint::Length(3),
                 Constraint::Min(1),
+                Constraint::Length(filter_bar_height),
                 Constraint::Length(1),
             ]
         };
@@ -928,7 +1038,22 @@ fn draw(
         frame.render_widget(table, chunks[1]);
 
         // Graph pane (if visible)
-        let status_chunk = if graph_visible {
+        // chunk indices:
+        //   graph_visible + filter: [0]=header [1]=table [2]=graph [3]=filter [4]=status
+        //   graph_visible, no filter: [0]=header [1]=table [2]=graph [3]=status
+        //   no graph + filter: [0]=header [1]=table [2]=filter [3]=status
+        //   no graph, no filter: [0]=header [1]=table [2]=status
+        let (status_chunk, filter_chunk_opt) = if graph_visible && show_filter_bar {
+            (chunks[4], Some(chunks[3]))
+        } else if graph_visible {
+            (chunks[3], None)
+        } else if show_filter_bar {
+            (chunks[3], Some(chunks[2]))
+        } else {
+            (chunks[2], None)
+        };
+
+        let graph_status_chunk = if graph_visible {
             // Split graph area: chart on left, legend on right
             let graph_layout = Layout::default()
                 .direction(Direction::Horizontal)
@@ -1046,17 +1171,38 @@ fn draw(
             );
             frame.render_widget(legend, graph_layout[1]);
 
-            chunks[3]
+            chunks[2] // graph chunk — we already computed status_chunk above
         } else {
-            chunks[2]
+            chunks[1] // no-op; just reference table chunk (unused)
         };
+        let _ = graph_status_chunk; // suppress unused warning when graph is off
+
+        // Filter bar (between table/graph and status)
+        if let Some(fc) = filter_chunk_opt {
+            let filter_text = if filter_mode {
+                format!(" / {}\u{2588}", filter_query) // blinking cursor simulation with block char
+            } else {
+                format!(" / {} (Esc to clear)", filter_query)
+            };
+            let filter_style = if filter_mode {
+                Style::default().fg(Color::Black).bg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+            };
+            frame.render_widget(Paragraph::new(filter_text).style(filter_style), fc);
+        }
 
         // Bottom bar
         let graph_hint = if graph_visible { "" } else { " | g: graph" };
+        let filter_hint = if filter_query.is_empty() && !filter_mode {
+            " | /: search"
+        } else {
+            ""
+        };
         let status = if active_alerts.is_empty() {
             format!(
-                " q: quit | \u{2191}\u{2193}: navigate | Enter: toggle | c/e: collapse/expand{} | Sensors: {} | Samples: {}{}",
-                graph_hint, sensor_count, max_samples, poll_warning
+                " q: quit | \u{2191}\u{2193}: navigate | Enter: toggle | c/e: collapse/expand{}{} | Sensors: {} | Samples: {}{}",
+                graph_hint, filter_hint, sensor_count, max_samples, poll_warning
             )
         } else {
             format!(" \u{26a0} {} | {}{}", active_alerts.join(" | "), {

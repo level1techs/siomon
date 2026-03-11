@@ -95,14 +95,15 @@ sudo sio
 
 | Key | Action |
 |-----|--------|
-| `q` / `Esc` | Quit |
+| `q` / `Esc` | Quit (or clear active filter) |
+| `/` | Enter search/filter mode |
 | `Up` / `Down` / `j` / `k` | Navigate between groups |
-| `Enter` / `Space` | Toggle collapse/expand group |
+| `Enter` / `Space` | Toggle collapse/expand group (or confirm filter) |
 | `c` | Collapse all groups |
 | `e` | Expand all groups |
 | `PageUp` / `PageDown` | Scroll 20 rows |
 | `Home` / `End` | Jump to top/bottom |
-| Mouse scroll | Scroll 3 lines |
+| `Mouse scroll` | Scroll 3 lines |
 
 ## Building
 
