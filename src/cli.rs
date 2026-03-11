@@ -14,19 +14,19 @@ pub struct Cli {
     pub command: Option<Commands>,
 
     /// Output format
-    #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Text)]
+    #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Text, global = true)]
     pub format: OutputFormat,
 
     /// Run in TUI (interactive) sensor monitor mode
-    #[arg(short = 'm', long = "monitor")]
+    #[arg(short = 'm', long = "monitor", global = true)]
     pub tui: bool,
 
     /// Sensor polling interval in milliseconds
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 1000, global = true)]
     pub interval: u64,
 
     /// Disable NVIDIA GPU detection
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub no_nvidia: bool,
 
     /// Enable direct I/O port and I2C sensor reading (requires root)
@@ -34,19 +34,19 @@ pub struct Cli {
     pub direct_io: bool,
 
     /// Show empty/unavailable fields
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub show_empty: bool,
 
     /// Log sensor data to CSV file while monitoring
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub log: Option<std::path::PathBuf>,
 
     /// Sensor alert rules (e.g., "hwmon/nct6798/temp1 > 80 @30s")
-    #[arg(long = "alert", value_name = "RULE")]
+    #[arg(long = "alert", value_name = "RULE", global = true)]
     pub alerts: Vec<String>,
 
     /// Color mode
-    #[arg(long, value_enum, default_value_t = ColorMode::Auto)]
+    #[arg(long, value_enum, default_value_t = ColorMode::Auto, global = true)]
     pub color: ColorMode,
 }
 
