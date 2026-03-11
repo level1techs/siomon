@@ -208,7 +208,7 @@ impl SensorHistory {
 /// Determine an aggregation key for a sensor label.
 /// Similar sensors get the same key so they can be averaged.
 fn aggregate_key(label: &str, source: &str, chip: &str) -> String {
-    let lower = label.to_lowercase();
+    let lower = label.to_ascii_lowercase();
 
     // DIMM temperatures -> "DIMM Temp"
     if lower.contains("dimm") && lower.contains("temp") {
@@ -341,7 +341,7 @@ fn run_loop(
         // Record sensor values for graphing
         history.push(&snapshot);
 
-        let filter_lc = filter_query.to_lowercase();
+        let filter_lc = filter_query.to_ascii_lowercase();
         let (display_rows, group_indices, collapse_key_vec) =
             build_rows(&snapshot, &collapsed, &filter_lc);
         last_total_rows = display_rows.len();
