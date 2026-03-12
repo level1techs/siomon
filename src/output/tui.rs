@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::widgets::{Axis, Block, Borders, Cell, Chart, Dataset, Paragraph, Row, Table};
-use ratatui::Terminal;
 
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::sensors::poller::PollStatsState;
@@ -394,7 +394,6 @@ fn run_loop(
         };
 
         let ctx = DrawContext {
-            rows: display_rows,
             group_indices: &group_indices,
             cursor,
             scroll_offset,
@@ -410,7 +409,7 @@ fn run_loop(
             filter_mode,
             filter_query: &filter_query,
         };
-        draw(terminal, &ctx)?;
+        draw(terminal, display_rows, &ctx)?;
 
         let timeout = Duration::from_millis(poll_interval_ms);
         if event::poll(timeout)? {
@@ -940,7 +939,6 @@ fn highlight_match(label: &str, filter_lc: &str) -> String {
 
 /// Bundled display state passed to the draw function.
 struct DrawContext<'a> {
-    rows: Vec<Row<'static>>,
     group_indices: &'a [usize],
     cursor: usize,
     scroll_offset: usize,
@@ -959,6 +957,7 @@ struct DrawContext<'a> {
 
 fn draw(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    rows: Vec<Row<'static>>,
     ctx: &DrawContext<'_>,
 ) -> io::Result<()> {
     let total_groups = ctx.group_indices.len();
@@ -1057,16 +1056,15 @@ fn draw(
         .style(Style::default().bg(Color::DarkGray));
 
         // Apply cursor highlight and scrolling
-        let visible_rows: Vec<Row> = ctx
-            .rows
-            .iter()
+        let visible_rows: Vec<Row> = rows
+            .into_iter()
             .enumerate()
             .skip(ctx.scroll_offset)
             .map(|(idx, row)| {
                 if Some(idx) == cursor_row_idx {
-                    row.clone().style(Style::default().bg(Color::DarkGray))
+                    row.style(Style::default().bg(Color::DarkGray))
                 } else {
-                    row.clone()
+                    row
                 }
             })
             .collect();

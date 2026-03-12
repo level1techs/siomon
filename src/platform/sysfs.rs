@@ -60,11 +60,7 @@ impl CachedFile {
             return None;
         }
         let s = self.buf.trim();
-        if s.is_empty() {
-            None
-        } else {
-            Some(s)
-        }
+        if s.is_empty() { None } else { Some(s) }
     }
 }
 
@@ -119,7 +115,7 @@ mod tests {
     use super::*;
 
     /// Create a temp file with the given content and return its path.
-    /// Uses a PID-scoped directory to avoid collisions and symlink attacks.
+    /// Uses a PID-scoped directory to reduce name collisions between tests.
     fn write_temp(name: &str, content: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("siomon_test_{}", std::process::id()));
         let _ = fs::create_dir(&dir);

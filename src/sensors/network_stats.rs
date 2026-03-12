@@ -38,8 +38,12 @@ impl NetworkStatsSource {
                 continue;
             };
 
-            let prev_rx = rx_file.read_u64().unwrap_or(0);
-            let prev_tx = tx_file.read_u64().unwrap_or(0);
+            let Some(prev_rx) = rx_file.read_u64() else {
+                continue;
+            };
+            let Some(prev_tx) = tx_file.read_u64() else {
+                continue;
+            };
 
             interfaces.push(NetInterface {
                 name: iface,
