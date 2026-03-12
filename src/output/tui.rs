@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -12,235 +12,74 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::symbols;
-use ratatui::widgets::{Axis, Block, Borders, Cell, Chart, Dataset, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::sensors::poller::PollStatsState;
 
-/// Maximum number of data points to retain per sensor for graphing.
-const GRAPH_HISTORY_LEN: usize = 300;
+/// Maximum number of data points to retain per sensor for sparklines.
+const HISTORY_LEN: usize = 300;
 
-/// Colors for graph traces (cycled through for multiple sensors).
-const GRAPH_COLORS: &[Color] = &[
-    Color::Green,
-    Color::Cyan,
-    Color::Yellow,
-    Color::Magenta,
-    Color::Red,
-    Color::Blue,
-    Color::LightGreen,
-    Color::LightCyan,
-];
+/// Unicode block characters for sparkline rendering, from lowest to highest.
+const SPARK_CHARS: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-#[derive(Clone, Copy, PartialEq)]
-enum GraphMode {
-    Temperature,
-    Voltage,
-    Fan,
-    Power,
+/// Render a `VecDeque<f64>` as a sparkline string of `width` characters.
+/// Values are normalized to the min/max range of the visible window.
+fn sparkline_str(data: &VecDeque<f64>, width: usize) -> String {
+    if data.is_empty() || width == 0 {
+        return String::new();
+    }
+    let start = data.len().saturating_sub(width);
+    let points: Vec<f64> = data
+        .iter()
+        .skip(start)
+        .copied()
+        .filter(|v| v.is_finite())
+        .collect();
+    if points.is_empty() {
+        return String::new();
+    }
+    let min = points.iter().copied().fold(f64::MAX, f64::min);
+    let max = points.iter().copied().fold(f64::MIN, f64::max);
+    let range = max - min;
+    points
+        .iter()
+        .map(|&v| {
+            let idx = if range < f64::EPSILON {
+                3 // flat line -> mid height
+            } else {
+                ((v - min) / range * 7.0).round() as usize
+            };
+            SPARK_CHARS[idx.min(7)]
+        })
+        .collect()
 }
 
-impl GraphMode {
-    fn next(self) -> Self {
-        match self {
-            Self::Temperature => Self::Voltage,
-            Self::Voltage => Self::Fan,
-            Self::Fan => Self::Power,
-            Self::Power => Self::Temperature,
-        }
-    }
-
-    fn prev(self) -> Self {
-        match self {
-            Self::Temperature => Self::Power,
-            Self::Voltage => Self::Temperature,
-            Self::Fan => Self::Voltage,
-            Self::Power => Self::Fan,
-        }
-    }
-
-    fn category(self) -> SensorCategory {
-        match self {
-            Self::Temperature => SensorCategory::Temperature,
-            Self::Voltage => SensorCategory::Voltage,
-            Self::Fan => SensorCategory::Fan,
-            Self::Power => SensorCategory::Power,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Temperature => "Temperature",
-            Self::Voltage => "Voltage",
-            Self::Fan => "Fan Speed",
-            Self::Power => "Power",
-        }
-    }
-
-    fn unit(self) -> &'static str {
-        match self {
-            Self::Temperature => "C",
-            Self::Voltage => "V",
-            Self::Fan => "RPM",
-            Self::Power => "W",
-        }
-    }
-}
-
-/// Per-sensor history ring buffer for graphing.
+/// Per-sensor history ring buffer for sparklines.
 struct SensorHistory {
     data: HashMap<String, VecDeque<f64>>,
-    tick: u64,
 }
 
 impl SensorHistory {
     fn new() -> Self {
         Self {
             data: HashMap::new(),
-            tick: 0,
         }
     }
 
     fn push(&mut self, snapshot: &[(SensorId, SensorReading)]) {
-        self.tick += 1;
         for (id, reading) in snapshot {
             let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
             let buf = self
                 .data
                 .entry(key)
-                .or_insert_with(|| VecDeque::with_capacity(GRAPH_HISTORY_LEN));
-            if buf.len() >= GRAPH_HISTORY_LEN {
+                .or_insert_with(|| VecDeque::with_capacity(HISTORY_LEN));
+            if buf.len() >= HISTORY_LEN {
                 buf.pop_front();
             }
             buf.push_back(reading.current);
         }
     }
-
-    /// Get history for sensors matching a category.
-    /// Similar sensors are averaged into groups (e.g., "DIMM Avg", "NVMe Avg").
-    fn traces_for_category(
-        &self,
-        snapshot: &[(SensorId, SensorReading)],
-        category: SensorCategory,
-    ) -> Vec<(String, Vec<(f64, f64)>)> {
-        // Collect raw per-sensor histories
-        let mut raw: Vec<(String, String, &VecDeque<f64>)> = Vec::new(); // (label, group_key, data)
-        let mut seen = HashSet::new();
-
-        for (id, reading) in snapshot {
-            if reading.category != category {
-                continue;
-            }
-            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            if let Some(buf) = self.data.get(&key) {
-                if buf.is_empty() || buf.iter().all(|&v| v == 0.0) {
-                    continue;
-                }
-                let group = aggregate_key(&reading.label, &id.source, &id.chip);
-                raw.push((reading.label.clone(), group, buf));
-            }
-        }
-
-        // Group sensors by aggregate key
-        let mut groups: HashMap<String, Vec<(&str, &VecDeque<f64>)>> = HashMap::new();
-        for (label, group, buf) in &raw {
-            groups
-                .entry(group.clone())
-                .or_default()
-                .push((label.as_str(), buf));
-        }
-
-        let mut traces = Vec::new();
-        for (group_name, members) in &groups {
-            if members.len() == 1 {
-                // Single sensor — use its label directly
-                let points: Vec<(f64, f64)> = members[0]
-                    .1
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &v)| (i as f64, v))
-                    .collect();
-                traces.push((members[0].0.to_string(), points));
-            } else {
-                // Multiple sensors — average them
-                let max_len = members.iter().map(|(_, b)| b.len()).max().unwrap_or(0);
-                let mut points = Vec::with_capacity(max_len);
-                for i in 0..max_len {
-                    let mut sum = 0.0;
-                    let mut count = 0;
-                    for (_, buf) in members {
-                        if i < buf.len() {
-                            sum += buf[i];
-                            count += 1;
-                        }
-                    }
-                    if count > 0 {
-                        points.push((i as f64, sum / count as f64));
-                    }
-                }
-                let label = format!("{} ({}x avg)", group_name, members.len());
-                traces.push((label, points));
-            }
-        }
-
-        // Sort by variance (most interesting first)
-        traces.sort_by(|a, b| {
-            let variance = |pts: &[(f64, f64)]| -> f64 {
-                if pts.len() < 2 {
-                    return 0.0;
-                }
-                let mean = pts.iter().map(|p| p.1).sum::<f64>() / pts.len() as f64;
-                pts.iter().map(|p| (p.1 - mean).powi(2)).sum::<f64>() / pts.len() as f64
-            };
-            let va = variance(&a.1);
-            let vb = variance(&b.1);
-            vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        traces.truncate(6);
-        traces
-    }
-}
-
-/// Determine an aggregation key for a sensor label.
-/// Similar sensors get the same key so they can be averaged.
-fn aggregate_key(label: &str, source: &str, chip: &str) -> String {
-    let lower = label.to_ascii_lowercase();
-
-    // DIMM temperatures -> "DIMM Temp"
-    if lower.contains("dimm") && lower.contains("temp") {
-        return "DIMM Temp".into();
-    }
-    // NVMe/Composite temps -> "NVMe Temp"
-    if (source == "hwmon" && chip == "nvme") || lower.contains("nvme") {
-        return "NVMe Temp".into();
-    }
-    // Chassis fans -> "Chassis Fan"
-    if lower.starts_with("chassis fan") || lower.starts_with("cha_fan") {
-        return "Chassis Fan".into();
-    }
-    // Core frequencies -> "Core Freq"
-    if lower.starts_with("core") && lower.contains("freq") {
-        return "Core Freq".into();
-    }
-    // CPU utilization -> "CPU Util"
-    if lower.starts_with("core") && lower.contains("util") {
-        return "CPU Util".into();
-    }
-    // AUXTIN temps -> "AUXTIN"
-    if lower.starts_with("auxtin") && !lower.contains("direct") {
-        return "AUXTIN".into();
-    }
-    // PCIe slot temps -> "PCIe Temp"
-    if lower.starts_with("pcie") && lower.contains("temp") {
-        return "PCIe Temp".into();
-    }
-
-    // Default: use the full label (no aggregation)
-    label.to_string()
 }
 
 /// Run the interactive TUI sensor dashboard.
@@ -255,11 +94,12 @@ pub fn run(
 ) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )?;
+    // Enter alternate screen, then enable button-event mouse mode (1002) + SGR
+    // encoding (1006). Mode 1002 captures clicks and scroll wheel but NOT plain
+    // mouse movement, avoiding unnecessary redraws on hover.
+    execute!(stdout, EnterAlternateScreen)?;
+    stdout.write_all(b"\x1b[?1002h\x1b[?1006h")?;
+    stdout.flush()?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -271,13 +111,12 @@ pub fn run(
         alert_rules,
     );
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        crossterm::event::DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
+    // Best-effort cleanup: disable mouse modes before leaving alternate screen
+    let _ = disable_raw_mode();
+    let _ = terminal.backend_mut().write_all(b"\x1b[?1006l\x1b[?1002l");
+    let _ = terminal.backend_mut().flush();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = terminal.show_cursor();
 
     result
 }
@@ -301,9 +140,7 @@ fn run_loop(
     let mut filter_mode = false;
     let mut filter_query = String::new();
 
-    // Graph state
-    let mut graph_visible = false;
-    let mut graph_mode = GraphMode::Temperature;
+    // Sparkline state
     let mut history = SensorHistory::new();
 
     // Auto-collapse high-count groups on first render
@@ -338,12 +175,12 @@ fn run_loop(
             }
         }
 
-        // Record sensor values for graphing
+        // Record sensor values for sparklines
         history.push(&snapshot);
 
         let filter_lc = filter_query.to_ascii_lowercase();
         let (display_rows, group_indices, collapse_key_vec) =
-            build_rows(&snapshot, &collapsed, &filter_lc);
+            build_rows(&snapshot, &collapsed, &filter_lc, &history);
         last_total_rows = display_rows.len();
 
         // Clamp scroll and cursor
@@ -361,13 +198,6 @@ fn run_loop(
 
         let elapsed_str = format_elapsed(elapsed);
         let collapsed_count = collapsed.len();
-
-        // Build graph traces if visible
-        let graph_traces = if graph_visible {
-            history.traces_for_category(&snapshot, graph_mode.category())
-        } else {
-            Vec::new()
-        };
 
         // Build poll timing warning string
         let poll_warning = {
@@ -403,160 +233,159 @@ fn run_loop(
             elapsed_str: &elapsed_str,
             active_alerts: &active_alerts,
             poll_warning: &poll_warning,
-            graph_visible,
-            graph_mode,
-            graph_traces: &graph_traces,
             filter_mode,
             filter_query: &filter_query,
         };
         draw(terminal, display_rows, &ctx)?;
 
+        // Wait for next tick or meaningful input event.
         let timeout = Duration::from_millis(poll_interval_ms);
         if event::poll(timeout)? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if filter_mode {
-                        // Filter input mode: capture characters, Esc/Enter to exit
-                        match key.code {
-                            KeyCode::Esc => {
-                                filter_mode = false;
-                                filter_query.clear();
-                                scroll_offset = 0;
-                                cursor = 0;
-                            }
-                            KeyCode::Enter => {
-                                filter_mode = false;
-                                // Keep filter active; press Esc to clear
-                            }
-                            KeyCode::Backspace => {
-                                filter_query.pop();
-                                scroll_offset = 0;
-                                cursor = 0;
-                            }
-                            KeyCode::Char(c) => {
-                                filter_query.push(c);
-                                scroll_offset = 0;
-                                cursor = 0;
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match key.code {
-                            KeyCode::Char('q') => return Ok(()),
-                            KeyCode::Esc => {
-                                if !filter_query.is_empty() {
-                                    // Esc clears active filter
+            // Event available — read and handle it. If it's just mouse movement,
+            // drain the queue without triggering a redraw.
+            let mut needs_redraw = false;
+            loop {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        needs_redraw = true;
+                        if filter_mode {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    filter_mode = false;
                                     filter_query.clear();
                                     scroll_offset = 0;
                                     cursor = 0;
-                                } else {
-                                    return Ok(());
                                 }
-                            }
-                            KeyCode::Char('/') => {
-                                filter_mode = true;
-                                // Don't clear filter_query so user can refine existing filter
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                if cursor > 0 {
-                                    cursor -= 1;
-                                    // Auto-scroll to keep cursor visible
-                                    if let Some(&row_idx) = group_indices.get(cursor) {
-                                        if row_idx < scroll_offset {
-                                            scroll_offset = row_idx;
-                                        }
-                                    }
+                                KeyCode::Enter => {
+                                    filter_mode = false;
                                 }
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                if cursor + 1 < group_indices.len() {
-                                    cursor += 1;
-                                    // Auto-scroll down
-                                    if let Some(&row_idx) = group_indices.get(cursor) {
-                                        let term_height = terminal.size()?.height as usize;
-                                        let visible = term_height.saturating_sub(6);
-                                        if row_idx >= scroll_offset + visible {
-                                            scroll_offset = row_idx.saturating_sub(visible / 2);
-                                        }
-                                    }
+                                KeyCode::Backspace => {
+                                    filter_query.pop();
+                                    scroll_offset = 0;
+                                    cursor = 0;
                                 }
+                                KeyCode::Char(c) => {
+                                    filter_query.push(c);
+                                    scroll_offset = 0;
+                                    cursor = 0;
+                                }
+                                _ => {}
                             }
-                            KeyCode::Enter | KeyCode::Char(' ') => {
-                                // Toggle collapse on the header at cursor
-                                if let Some(key) = collapse_key_vec.get(cursor) {
-                                    if collapsed.contains(key) {
-                                        collapsed.remove(key);
+                        } else {
+                            match key.code {
+                                KeyCode::Char('q') => return Ok(()),
+                                KeyCode::Esc => {
+                                    if !filter_query.is_empty() {
+                                        filter_query.clear();
+                                        scroll_offset = 0;
+                                        cursor = 0;
                                     } else {
-                                        collapsed.insert(key.clone());
+                                        return Ok(());
                                     }
                                 }
-                            }
-                            KeyCode::Char('c') => {
-                                // Collapse all (both source and category levels)
-                                for key in all_collapse_keys(&snapshot) {
-                                    collapsed.insert(key);
+                                KeyCode::Char('/') => {
+                                    filter_mode = true;
                                 }
-                            }
-                            KeyCode::Char('e') => {
-                                // Expand all
-                                collapsed.clear();
-                            }
-                            KeyCode::Char('g') => {
-                                graph_visible = !graph_visible;
-                            }
-                            KeyCode::Tab | KeyCode::Right if graph_visible => {
-                                graph_mode = graph_mode.next();
-                            }
-                            KeyCode::BackTab | KeyCode::Left if graph_visible => {
-                                graph_mode = graph_mode.prev();
-                            }
-                            KeyCode::PageUp => {
-                                scroll_offset = scroll_offset.saturating_sub(20);
-                                // Move cursor up to nearest visible group
-                                while cursor > 0 {
-                                    if let Some(&ri) = group_indices.get(cursor) {
-                                        if ri >= scroll_offset {
-                                            break;
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    if cursor > 0 {
+                                        cursor -= 1;
+                                        if let Some(&row_idx) = group_indices.get(cursor) {
+                                            if row_idx < scroll_offset {
+                                                scroll_offset = row_idx;
+                                            }
                                         }
                                     }
-                                    cursor -= 1;
                                 }
-                            }
-                            KeyCode::PageDown => {
-                                scroll_offset = scroll_offset.saturating_add(20);
-                                // Move cursor down to nearest visible group
-                                while cursor + 1 < group_indices.len() {
-                                    if let Some(&ri) = group_indices.get(cursor) {
-                                        if ri >= scroll_offset {
-                                            break;
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    if cursor + 1 < group_indices.len() {
+                                        cursor += 1;
+                                        if let Some(&row_idx) = group_indices.get(cursor) {
+                                            let term_height = terminal.size()?.height as usize;
+                                            let visible = term_height.saturating_sub(6);
+                                            if row_idx >= scroll_offset + visible {
+                                                scroll_offset = row_idx.saturating_sub(visible / 2);
+                                            }
                                         }
                                     }
-                                    cursor += 1;
                                 }
+                                KeyCode::Enter | KeyCode::Char(' ') => {
+                                    if let Some(key) = collapse_key_vec.get(cursor) {
+                                        if collapsed.contains(key) {
+                                            collapsed.remove(key);
+                                        } else {
+                                            collapsed.insert(key.clone());
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('c') => {
+                                    for key in all_collapse_keys(&snapshot) {
+                                        collapsed.insert(key);
+                                    }
+                                }
+                                KeyCode::Char('e') => {
+                                    collapsed.clear();
+                                }
+                                KeyCode::PageUp => {
+                                    scroll_offset = scroll_offset.saturating_sub(20);
+                                    while cursor > 0 {
+                                        if let Some(&ri) = group_indices.get(cursor) {
+                                            if ri >= scroll_offset {
+                                                break;
+                                            }
+                                        }
+                                        cursor -= 1;
+                                    }
+                                }
+                                KeyCode::PageDown => {
+                                    scroll_offset = scroll_offset.saturating_add(20);
+                                    while cursor + 1 < group_indices.len() {
+                                        if let Some(&ri) = group_indices.get(cursor) {
+                                            if ri >= scroll_offset {
+                                                break;
+                                            }
+                                        }
+                                        cursor += 1;
+                                    }
+                                }
+                                KeyCode::Home => {
+                                    scroll_offset = 0;
+                                    cursor = 0;
+                                }
+                                KeyCode::End => {
+                                    scroll_offset = last_total_rows.saturating_sub(1);
+                                    cursor = group_indices.len().saturating_sub(1);
+                                }
+                                _ => {}
                             }
-                            KeyCode::Home => {
-                                scroll_offset = 0;
-                                cursor = 0;
-                            }
-                            KeyCode::End => {
-                                scroll_offset = last_total_rows.saturating_sub(1);
-                                cursor = group_indices.len().saturating_sub(1);
-                            }
-                            _ => {}
                         }
+                        break;
                     }
+                    Event::Mouse(mouse) => match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            scroll_offset = scroll_offset.saturating_sub(3);
+                            needs_redraw = true;
+                            break;
+                        }
+                        MouseEventKind::ScrollDown => {
+                            scroll_offset = scroll_offset.saturating_add(3);
+                            needs_redraw = true;
+                            break;
+                        }
+                        _ => {} // Mouse movement — drain silently
+                    },
+                    Event::Resize(_, _) => {
+                        needs_redraw = true;
+                        break;
+                    }
+                    _ => {} // Unknown event — drain silently
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        scroll_offset = scroll_offset.saturating_sub(3);
-                    }
-                    MouseEventKind::ScrollDown => {
-                        scroll_offset = scroll_offset.saturating_add(3);
-                    }
-                    _ => {}
-                },
-                Event::Resize(_, _) => {}
-                _ => {}
+                // No meaningful event yet — if no more events queued, stop draining
+                if !event::poll(Duration::ZERO)? {
+                    break;
+                }
+            }
+            if !needs_redraw {
+                continue; // Only mouse movement — skip redraw, wait for next tick
             }
         }
     }
@@ -658,9 +487,9 @@ fn compute_summaries(snapshot: &[(SensorId, SensorReading)]) -> HashMap<String, 
 /// Build a collapsed summary row with min-max range in the value columns.
 fn summary_row(header_text: String, style: Style, summary: Option<&Summary>) -> Row<'static> {
     let summary_style = Style::default().fg(Color::DarkGray);
-    if let Some(s) = summary {
+    let cells = if let Some(s) = summary {
         let p = s.precision;
-        Row::new(vec![
+        vec![
             Cell::from(header_text).style(style),
             Cell::from(format!(
                 "{:.prec$}\u{2013}{:.prec$}",
@@ -673,23 +502,27 @@ fn summary_row(header_text: String, style: Style, summary: Option<&Summary>) -> 
             Cell::from(format!("{:.prec$}", s.global_max, prec = p)).style(summary_style),
             Cell::from(format!("{:.prec$}", s.avg, prec = p)).style(summary_style),
             Cell::from(s.unit.clone()).style(summary_style),
-        ])
+            Cell::from(""),
+        ]
     } else {
-        Row::new(vec![
+        vec![
             Cell::from(header_text).style(style),
             Cell::from(""),
             Cell::from(""),
             Cell::from(""),
             Cell::from(""),
             Cell::from(""),
-        ])
-    }
+            Cell::from(""),
+        ]
+    };
+    Row::new(cells)
 }
 
 /// Build an expanded header row (no summary values).
 fn header_row(header_text: String, style: Style) -> Row<'static> {
     Row::new(vec![
         Cell::from(header_text).style(style),
+        Cell::from(""),
         Cell::from(""),
         Cell::from(""),
         Cell::from(""),
@@ -775,6 +608,7 @@ fn build_rows(
     snapshot: &[(SensorId, SensorReading)],
     collapsed: &HashSet<String>,
     filter_lc: &str,
+    history: &SensorHistory,
 ) -> (Vec<Row<'static>>, Vec<usize>, Vec<String>) {
     let order = sorted_indices(snapshot);
     let summaries = compute_summaries(snapshot);
@@ -902,6 +736,13 @@ fn build_rows(
             format!("       {}", reading.label)
         };
 
+        let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+        let spark = history
+            .data
+            .get(&key)
+            .map(|buf| sparkline_str(buf, 20))
+            .unwrap_or_default();
+
         let row = Row::new(vec![
             Cell::from(label_text),
             Cell::from(format!("{:.prec$}", reading.current, prec = precision)).style(style),
@@ -909,6 +750,7 @@ fn build_rows(
             Cell::from(format!("{:.prec$}", reading.max, prec = precision)),
             Cell::from(format!("{:.prec$}", reading.avg, prec = precision)),
             Cell::from(format!("{}", reading.unit)),
+            Cell::from(spark).style(Style::default().fg(Color::DarkGray)),
         ]);
         rows.push(row);
     }
@@ -948,9 +790,6 @@ struct DrawContext<'a> {
     elapsed_str: &'a str,
     active_alerts: &'a [String],
     poll_warning: &'a str,
-    graph_visible: bool,
-    graph_mode: GraphMode,
-    graph_traces: &'a [(String, Vec<(f64, f64)>)],
     filter_mode: bool,
     filter_query: &'a str,
 }
@@ -972,22 +811,12 @@ fn draw(
         let show_filter_bar = ctx.filter_mode || !ctx.filter_query.is_empty();
         let filter_bar_height = if show_filter_bar { 1 } else { 0 };
 
-        let constraints = if ctx.graph_visible {
-            vec![
-                Constraint::Length(3),
-                Constraint::Min(10),
-                Constraint::Percentage(35),
-                Constraint::Length(filter_bar_height),
-                Constraint::Length(1),
-            ]
-        } else {
-            vec![
-                Constraint::Length(3),
-                Constraint::Min(1),
-                Constraint::Length(filter_bar_height),
-                Constraint::Length(1),
-            ]
-        };
+        let constraints = vec![
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(filter_bar_height),
+            Constraint::Length(1),
+        ];
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1019,37 +848,17 @@ fn draw(
         frame.render_widget(header_block, chunks[0]);
 
         // Main table
+        let hdr_style = Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
         let table_header = Row::new(vec![
-            Cell::from("Label").style(
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Cell::from("Current").style(
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Cell::from("Min").style(
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Cell::from("Max").style(
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Cell::from("Avg").style(
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Cell::from("Unit").style(
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Cell::from("Label").style(hdr_style),
+            Cell::from("Current").style(hdr_style),
+            Cell::from("Min").style(hdr_style),
+            Cell::from("Max").style(hdr_style),
+            Cell::from("Avg").style(hdr_style),
+            Cell::from("Unit").style(hdr_style),
+            Cell::from("Trend").style(hdr_style),
         ])
         .height(1)
         .bottom_margin(1)
@@ -1078,6 +887,7 @@ fn draw(
                 Constraint::Length(10),
                 Constraint::Length(10),
                 Constraint::Length(8),
+                Constraint::Length(22),
             ],
         )
         .header(table_header)
@@ -1093,11 +903,6 @@ fn draw(
             (chunks[last], None)
         };
 
-        // Graph pane
-        if ctx.graph_visible {
-            render_graph(frame, chunks[2], ctx.graph_mode, ctx.graph_traces);
-        }
-
         // Filter bar
         if let Some(fc) = filter_chunk_opt {
             render_filter_bar(frame, fc, ctx.filter_mode, ctx.filter_query);
@@ -1108,131 +913,6 @@ fn draw(
     })?;
 
     Ok(())
-}
-
-/// Render the graph pane: time-series chart on the left, legend on the right.
-fn render_graph(
-    frame: &mut ratatui::Frame,
-    area: ratatui::layout::Rect,
-    graph_mode: GraphMode,
-    graph_traces: &[(String, Vec<(f64, f64)>)],
-) {
-    let graph_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(40), Constraint::Length(22)])
-        .split(area);
-
-    // Build datasets for the chart
-    let datasets: Vec<Dataset> = graph_traces
-        .iter()
-        .enumerate()
-        .map(|(i, (label, points))| {
-            let color = GRAPH_COLORS[i % GRAPH_COLORS.len()];
-            let short = truncate_label(label, 16);
-            Dataset::default()
-                .name(short)
-                .marker(symbols::Marker::Braille)
-                .graph_type(ratatui::widgets::GraphType::Line)
-                .style(Style::default().fg(color))
-                .data(points)
-        })
-        .collect();
-
-    // Compute Y-axis bounds with padding
-    let (y_min, y_max) = graph_traces
-        .iter()
-        .flat_map(|(_, pts)| pts.iter().map(|p| p.1))
-        .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-
-    let y_range = y_max - y_min;
-    let y_pad = if y_range < 1.0 { 2.0 } else { y_range * 0.1 };
-    let y_lo = if y_min == f64::MAX {
-        0.0
-    } else {
-        (y_min - y_pad).max(0.0)
-    };
-    let y_hi = if y_max == f64::MIN {
-        100.0
-    } else {
-        y_max + y_pad
-    };
-
-    let x_max = graph_traces
-        .iter()
-        .map(|(_, pts)| pts.len())
-        .max()
-        .unwrap_or(1) as f64;
-
-    // Y-axis labels: 5 evenly spaced
-    let y_step = (y_hi - y_lo) / 4.0;
-    let y_labels: Vec<ratatui::text::Span> = (0..5)
-        .map(|i| {
-            let v = y_lo + y_step * i as f64;
-            ratatui::text::Span::styled(format!("{:>6.1}", v), Style::default().fg(Color::DarkGray))
-        })
-        .collect();
-
-    let mode_tabs = format!(
-        " {} ({}) | Tab/arrows: mode | g: hide ",
-        graph_mode.label(),
-        graph_mode.unit()
-    );
-
-    let chart = Chart::new(datasets)
-        .block(
-            Block::default()
-                .title(mode_tabs)
-                .title_style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .x_axis(
-            Axis::default()
-                .style(Style::default().fg(Color::DarkGray))
-                .bounds([0.0, x_max]),
-        )
-        .y_axis(
-            Axis::default()
-                .style(Style::default().fg(Color::DarkGray))
-                .labels(y_labels)
-                .bounds([y_lo, y_hi]),
-        );
-
-    frame.render_widget(chart, graph_layout[0]);
-
-    // Legend panel
-    let mut legend_lines: Vec<ratatui::text::Line> = Vec::new();
-    for (i, (label, points)) in graph_traces.iter().enumerate() {
-        let color = GRAPH_COLORS[i % GRAPH_COLORS.len()];
-        let current = points.last().map(|p| p.1).unwrap_or(0.0);
-        let short_label = truncate_label(label, 14);
-        legend_lines.push(ratatui::text::Line::from(vec![
-            ratatui::text::Span::styled("\u{2501}\u{2501} ", Style::default().fg(color)),
-            ratatui::text::Span::styled(
-                format!("{:<14}", short_label),
-                Style::default().fg(Color::White),
-            ),
-        ]));
-        legend_lines.push(ratatui::text::Line::from(vec![
-            ratatui::text::Span::styled(
-                format!("   {:>8.1} {}", current, graph_mode.unit()),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    }
-
-    let legend = Paragraph::new(legend_lines).block(
-        Block::default()
-            .title(" Legend ")
-            .title_style(Style::default().fg(Color::White))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
-    frame.render_widget(legend, graph_layout[1]);
 }
 
 /// Render the filter input bar.
@@ -1261,7 +941,6 @@ fn render_status_bar(
     area: ratatui::layout::Rect,
     ctx: &DrawContext<'_>,
 ) {
-    let graph_hint = if ctx.graph_visible { "" } else { " | g: graph" };
     let filter_hint = if ctx.filter_query.is_empty() && !ctx.filter_mode {
         " | /: search"
     } else {
@@ -1269,8 +948,8 @@ fn render_status_bar(
     };
     let status = if ctx.active_alerts.is_empty() {
         format!(
-            " q: quit | \u{2191}\u{2193}: navigate | Enter: toggle | c/e: collapse/expand{}{} | Sensors: {} | Samples: {}{}",
-            graph_hint, filter_hint, ctx.sensor_count, ctx.max_samples, ctx.poll_warning
+            " q: quit | \u{2191}\u{2193}: navigate | Enter: toggle | c/e: collapse/expand{} | Sensors: {} | Samples: {}{}",
+            filter_hint, ctx.sensor_count, ctx.max_samples, ctx.poll_warning
         )
     } else {
         format!(
@@ -1294,17 +973,6 @@ fn render_status_bar(
             .add_modifier(Modifier::BOLD)
     };
     frame.render_widget(Paragraph::new(status).style(status_style), area);
-}
-
-/// Truncate a label to `max_chars` characters, appending "..." if needed.
-/// Uses char boundaries to avoid panicking on multi-byte UTF-8.
-fn truncate_label(label: &str, max_chars: usize) -> String {
-    if label.chars().count() <= max_chars {
-        label.to_string()
-    } else {
-        let truncated: String = label.chars().take(max_chars - 3).collect();
-        format!("{truncated}...")
-    }
 }
 
 fn format_precision(unit: &SensorUnit) -> usize {
