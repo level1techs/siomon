@@ -1,23 +1,24 @@
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
-use crate::platform::sysfs;
-use std::collections::HashMap;
+use crate::platform::sysfs::{self, CachedFile};
 use std::path::Path;
 use std::time::Instant;
 
 pub struct NetworkStatsSource {
-    prev_stats: HashMap<String, NetStat>,
+    interfaces: Vec<NetInterface>,
     prev_time: Instant,
 }
 
-#[derive(Clone)]
-struct NetStat {
-    rx_bytes: u64,
-    tx_bytes: u64,
+struct NetInterface {
+    name: String,
+    rx_file: CachedFile,
+    tx_file: CachedFile,
+    prev_rx: u64,
+    prev_tx: u64,
 }
 
 impl NetworkStatsSource {
     pub fn discover() -> Self {
-        let mut prev_stats = HashMap::new();
+        let mut interfaces = Vec::new();
 
         for dir in sysfs::glob_paths("/sys/class/net/*") {
             let iface = match dir.file_name().and_then(|n| n.to_str()) {
@@ -29,13 +30,28 @@ impl NetworkStatsSource {
                 continue;
             }
 
-            if let Some(stat) = read_net_stat(&iface) {
-                prev_stats.insert(iface, stat);
-            }
+            let base = dir.join("statistics");
+            let Some(mut rx_file) = CachedFile::open(base.join("rx_bytes")) else {
+                continue;
+            };
+            let Some(mut tx_file) = CachedFile::open(base.join("tx_bytes")) else {
+                continue;
+            };
+
+            let prev_rx = rx_file.read_u64().unwrap_or(0);
+            let prev_tx = tx_file.read_u64().unwrap_or(0);
+
+            interfaces.push(NetInterface {
+                name: iface,
+                rx_file,
+                tx_file,
+                prev_rx,
+                prev_tx,
+            });
         }
 
         Self {
-            prev_stats,
+            interfaces,
             prev_time: Instant::now(),
         }
     }
@@ -50,57 +66,56 @@ impl NetworkStatsSource {
             return readings;
         }
 
-        let mut current_stats = HashMap::new();
-
-        for iface in self.prev_stats.keys() {
-            let Some(cur) = read_net_stat(iface) else {
+        for iface in &mut self.interfaces {
+            let Some(rx) = iface.rx_file.read_u64() else {
+                continue;
+            };
+            let Some(tx) = iface.tx_file.read_u64() else {
                 continue;
             };
 
-            if let Some(prev) = self.prev_stats.get(iface) {
-                let rx_delta = cur.rx_bytes.saturating_sub(prev.rx_bytes);
-                let tx_delta = cur.tx_bytes.saturating_sub(prev.tx_bytes);
+            let rx_delta = rx.saturating_sub(iface.prev_rx);
+            let tx_delta = tx.saturating_sub(iface.prev_tx);
 
-                let rx_mbps = (rx_delta as f64) / (1_048_576.0 * elapsed_secs);
-                let tx_mbps = (tx_delta as f64) / (1_048_576.0 * elapsed_secs);
+            let rx_mbps = (rx_delta as f64) / (1_048_576.0 * elapsed_secs);
+            let tx_mbps = (tx_delta as f64) / (1_048_576.0 * elapsed_secs);
 
-                let rx_id = SensorId {
-                    source: "net".into(),
-                    chip: iface.clone(),
-                    sensor: "rx_mbps".into(),
-                };
-                let rx_label = format!("{iface} RX");
-                readings.push((
-                    rx_id,
-                    SensorReading::new(
-                        rx_label,
-                        rx_mbps,
-                        SensorUnit::MegabytesPerSec,
-                        SensorCategory::Throughput,
-                    ),
-                ));
+            let rx_id = SensorId {
+                source: "net".into(),
+                chip: iface.name.clone(),
+                sensor: "rx_mbps".into(),
+            };
+            let rx_label = format!("{} RX", iface.name);
+            readings.push((
+                rx_id,
+                SensorReading::new(
+                    rx_label,
+                    rx_mbps,
+                    SensorUnit::MegabytesPerSec,
+                    SensorCategory::Throughput,
+                ),
+            ));
 
-                let tx_id = SensorId {
-                    source: "net".into(),
-                    chip: iface.clone(),
-                    sensor: "tx_mbps".into(),
-                };
-                let tx_label = format!("{iface} TX");
-                readings.push((
-                    tx_id,
-                    SensorReading::new(
-                        tx_label,
-                        tx_mbps,
-                        SensorUnit::MegabytesPerSec,
-                        SensorCategory::Throughput,
-                    ),
-                ));
-            }
+            let tx_id = SensorId {
+                source: "net".into(),
+                chip: iface.name.clone(),
+                sensor: "tx_mbps".into(),
+            };
+            let tx_label = format!("{} TX", iface.name);
+            readings.push((
+                tx_id,
+                SensorReading::new(
+                    tx_label,
+                    tx_mbps,
+                    SensorUnit::MegabytesPerSec,
+                    SensorCategory::Throughput,
+                ),
+            ));
 
-            current_stats.insert(iface.clone(), cur);
+            iface.prev_rx = rx;
+            iface.prev_tx = tx;
         }
 
-        self.prev_stats = current_stats;
         self.prev_time = now;
         readings
     }
@@ -114,13 +129,6 @@ impl crate::sensors::SensorSource for NetworkStatsSource {
     fn poll(&mut self) -> Vec<(SensorId, SensorReading)> {
         NetworkStatsSource::poll(self)
     }
-}
-
-fn read_net_stat(iface: &str) -> Option<NetStat> {
-    let base = Path::new("/sys/class/net").join(iface).join("statistics");
-    let rx_bytes = sysfs::read_u64_optional(&base.join("rx_bytes"))?;
-    let tx_bytes = sysfs::read_u64_optional(&base.join("tx_bytes"))?;
-    Some(NetStat { rx_bytes, tx_bytes })
 }
 
 fn is_physical_interface(dir: &Path, iface: &str) -> bool {

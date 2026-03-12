@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols;
 use ratatui::widgets::{Axis, Block, Borders, Cell, Chart, Dataset, Paragraph, Row, Table};
+use ratatui::Terminal;
 
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::sensors::poller::PollStatsState;
@@ -393,24 +393,24 @@ fn run_loop(
             }
         };
 
-        draw(
-            terminal,
-            display_rows,
-            &group_indices,
+        let ctx = DrawContext {
+            rows: display_rows,
+            group_indices: &group_indices,
             cursor,
             scroll_offset,
             sensor_count,
             max_samples,
             collapsed_count,
-            &elapsed_str,
-            &active_alerts,
-            &poll_warning,
+            elapsed_str: &elapsed_str,
+            active_alerts: &active_alerts,
+            poll_warning: &poll_warning,
             graph_visible,
             graph_mode,
-            &graph_traces,
+            graph_traces: &graph_traces,
             filter_mode,
-            &filter_query,
-        )?;
+            filter_query: &filter_query,
+        };
+        draw(terminal, &ctx)?;
 
         let timeout = Duration::from_millis(poll_interval_ms);
         if event::poll(timeout)? {
@@ -938,35 +938,42 @@ fn highlight_match(label: &str, filter_lc: &str) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+/// Bundled display state passed to the draw function.
+struct DrawContext<'a> {
     rows: Vec<Row<'static>>,
-    group_indices: &[usize],
+    group_indices: &'a [usize],
     cursor: usize,
     scroll_offset: usize,
     sensor_count: usize,
     max_samples: u64,
     collapsed_count: usize,
-    elapsed_str: &str,
-    active_alerts: &[String],
-    poll_warning: &str,
+    elapsed_str: &'a str,
+    active_alerts: &'a [String],
+    poll_warning: &'a str,
     graph_visible: bool,
     graph_mode: GraphMode,
-    graph_traces: &[(String, Vec<(f64, f64)>)],
+    graph_traces: &'a [(String, Vec<(f64, f64)>)],
     filter_mode: bool,
-    filter_query: &str,
+    filter_query: &'a str,
+}
+
+fn draw(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    ctx: &DrawContext<'_>,
 ) -> io::Result<()> {
-    let total_groups = group_indices.len();
+    let total_groups = ctx.group_indices.len();
+
+    // Prepare cursor highlight index before moving rows into the closure
+    let cursor_row_idx = ctx.group_indices.get(ctx.cursor).copied();
 
     terminal.draw(|frame| {
         let size = frame.area();
 
         // When a filter is active (or being typed), show a filter bar above the status bar.
-        let show_filter_bar = filter_mode || !filter_query.is_empty();
+        let show_filter_bar = ctx.filter_mode || !ctx.filter_query.is_empty();
         let filter_bar_height = if show_filter_bar { 1 } else { 0 };
 
-        let constraints = if graph_visible {
+        let constraints = if ctx.graph_visible {
             vec![
                 Constraint::Length(3),
                 Constraint::Min(10),
@@ -997,7 +1004,7 @@ fn draw(
         };
         let title = format!(
             " sio \u{2014} Sensor Monitor | {} sensors | {} groups ({} collapsed) | {}{}",
-            sensor_count, total_groups, collapsed_count, elapsed_str, priv_hint
+            ctx.sensor_count, total_groups, ctx.collapsed_count, ctx.elapsed_str, priv_hint
         );
         let header_block = Paragraph::new(title)
             .style(
@@ -1011,9 +1018,6 @@ fn draw(
                     .border_style(Style::default().fg(Color::DarkGray)),
             );
         frame.render_widget(header_block, chunks[0]);
-
-        // Highlight the cursor's group header row
-        let cursor_row_idx = group_indices.get(cursor).copied();
 
         // Main table
         let table_header = Row::new(vec![
@@ -1053,15 +1057,16 @@ fn draw(
         .style(Style::default().bg(Color::DarkGray));
 
         // Apply cursor highlight and scrolling
-        let visible_rows: Vec<Row> = rows
-            .into_iter()
+        let visible_rows: Vec<Row> = ctx
+            .rows
+            .iter()
             .enumerate()
-            .skip(scroll_offset)
+            .skip(ctx.scroll_offset)
             .map(|(idx, row)| {
                 if Some(idx) == cursor_row_idx {
-                    row.style(Style::default().bg(Color::DarkGray))
+                    row.clone().style(Style::default().bg(Color::DarkGray))
                 } else {
-                    row
+                    row.clone()
                 }
             })
             .collect();
@@ -1082,9 +1087,7 @@ fn draw(
 
         frame.render_widget(table, chunks[1]);
 
-        // Graph pane (if visible)
-        // Note: the layout always includes a status bar as the last chunk.
-        // If a filter bar is active, it occupies the chunk immediately preceding it.
+        // Determine status and filter chunk positions
         let last = chunks.len() - 1;
         let (status_chunk, filter_chunk_opt) = if show_filter_bar && last > 0 {
             (chunks[last], Some(chunks[last - 1]))
@@ -1092,170 +1095,207 @@ fn draw(
             (chunks[last], None)
         };
 
-        if graph_visible {
-            // Split graph area: chart on left, legend on right
-            let graph_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(40), Constraint::Length(22)])
-                .split(chunks[2]);
-
-            // Build datasets for the chart
-            let datasets: Vec<Dataset> = graph_traces
-                .iter()
-                .enumerate()
-                .map(|(i, (label, points))| {
-                    let color = GRAPH_COLORS[i % GRAPH_COLORS.len()];
-                    // Truncate label for dataset name
-                    let short = truncate_label(label, 16);
-                    Dataset::default()
-                        .name(short)
-                        .marker(symbols::Marker::Braille)
-                        .graph_type(ratatui::widgets::GraphType::Line)
-                        .style(Style::default().fg(color))
-                        .data(points)
-                })
-                .collect();
-
-            // Compute Y-axis bounds with padding
-            let (y_min, y_max) = graph_traces
-                .iter()
-                .flat_map(|(_, pts)| pts.iter().map(|p| p.1))
-                .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-
-            let y_range = y_max - y_min;
-            let y_pad = if y_range < 1.0 { 2.0 } else { y_range * 0.1 };
-            let y_lo = if y_min == f64::MAX { 0.0 } else { (y_min - y_pad).max(0.0) };
-            let y_hi = if y_max == f64::MIN { 100.0 } else { y_max + y_pad };
-
-            let x_max = graph_traces
-                .iter()
-                .map(|(_, pts)| pts.len())
-                .max()
-                .unwrap_or(1) as f64;
-
-            // Y-axis labels: 5 evenly spaced
-            let y_step = (y_hi - y_lo) / 4.0;
-            let y_labels: Vec<ratatui::text::Span> = (0..5)
-                .map(|i| {
-                    let v = y_lo + y_step * i as f64;
-                    ratatui::text::Span::styled(
-                        format!("{:>6.1}", v),
-                        Style::default().fg(Color::DarkGray),
-                    )
-                })
-                .collect();
-
-            let mode_tabs = format!(
-                " {} ({}) | Tab/arrows: mode | g: hide ",
-                graph_mode.label(),
-                graph_mode.unit()
-            );
-
-            let chart = Chart::new(datasets)
-                .block(
-                    Block::default()
-                        .title(mode_tabs)
-                        .title_style(
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray)),
-                )
-                .x_axis(
-                    Axis::default()
-                        .style(Style::default().fg(Color::DarkGray))
-                        .bounds([0.0, x_max]),
-                )
-                .y_axis(
-                    Axis::default()
-                        .style(Style::default().fg(Color::DarkGray))
-                        .labels(y_labels)
-                        .bounds([y_lo, y_hi]),
-                );
-
-            frame.render_widget(chart, graph_layout[0]);
-
-            // Legend panel
-            let mut legend_lines: Vec<ratatui::text::Line> = Vec::new();
-            for (i, (label, points)) in graph_traces.iter().enumerate() {
-                let color = GRAPH_COLORS[i % GRAPH_COLORS.len()];
-                let current = points.last().map(|p| p.1).unwrap_or(0.0);
-                let short_label = truncate_label(label, 14);
-                legend_lines.push(ratatui::text::Line::from(vec![
-                    ratatui::text::Span::styled(
-                        "\u{2501}\u{2501} ",
-                        Style::default().fg(color),
-                    ),
-                    ratatui::text::Span::styled(
-                        format!("{:<14}", short_label),
-                        Style::default().fg(Color::White),
-                    ),
-                ]));
-                legend_lines.push(ratatui::text::Line::from(vec![
-                    ratatui::text::Span::styled(
-                        format!("   {:>8.1} {}", current, graph_mode.unit()),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                ]));
-            }
-
-            let legend = Paragraph::new(legend_lines).block(
-                Block::default()
-                    .title(" Legend ")
-                    .title_style(Style::default().fg(Color::White))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            );
-            frame.render_widget(legend, graph_layout[1]);
+        // Graph pane
+        if ctx.graph_visible {
+            render_graph(frame, chunks[2], ctx.graph_mode, ctx.graph_traces);
         }
 
-        // Filter bar (between table/graph and status)
+        // Filter bar
         if let Some(fc) = filter_chunk_opt {
-            let filter_text = if filter_mode {
-                format!(" / {}\u{2588}", filter_query) // blinking cursor simulation with block char
-            } else {
-                format!(" / {} (Esc to clear)", filter_query)
-            };
-            let filter_style = if filter_mode {
-                Style::default().fg(Color::Black).bg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::Yellow).bg(Color::DarkGray)
-            };
-            frame.render_widget(Paragraph::new(filter_text).style(filter_style), fc);
+            render_filter_bar(frame, fc, ctx.filter_mode, ctx.filter_query);
         }
 
-        // Bottom bar
-        let graph_hint = if graph_visible { "" } else { " | g: graph" };
-        let filter_hint = if filter_query.is_empty() && !filter_mode {
-            " | /: search"
-        } else {
-            ""
-        };
-        let status = if active_alerts.is_empty() {
-            format!(
-                " q: quit | \u{2191}\u{2193}: navigate | Enter: toggle | c/e: collapse/expand{}{} | Sensors: {} | Samples: {}{}",
-                graph_hint, filter_hint, sensor_count, max_samples, poll_warning
-            )
-        } else {
-            format!(" \u{26a0} {} | {}{}", active_alerts.join(" | "), {
-                format!("Sensors: {} | Samples: {}", sensor_count, max_samples)
-            }, poll_warning)
-        };
-        let status_style = if active_alerts.is_empty() {
-            Style::default().fg(Color::DarkGray).bg(Color::Black)
-        } else {
-            Style::default()
-                .fg(Color::Yellow)
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD)
-        };
-        let status_bar = Paragraph::new(status).style(status_style);
-        frame.render_widget(status_bar, status_chunk);
+        // Status bar
+        render_status_bar(frame, status_chunk, ctx);
     })?;
 
     Ok(())
+}
+
+/// Render the graph pane: time-series chart on the left, legend on the right.
+fn render_graph(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    graph_mode: GraphMode,
+    graph_traces: &[(String, Vec<(f64, f64)>)],
+) {
+    let graph_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(40), Constraint::Length(22)])
+        .split(area);
+
+    // Build datasets for the chart
+    let datasets: Vec<Dataset> = graph_traces
+        .iter()
+        .enumerate()
+        .map(|(i, (label, points))| {
+            let color = GRAPH_COLORS[i % GRAPH_COLORS.len()];
+            let short = truncate_label(label, 16);
+            Dataset::default()
+                .name(short)
+                .marker(symbols::Marker::Braille)
+                .graph_type(ratatui::widgets::GraphType::Line)
+                .style(Style::default().fg(color))
+                .data(points)
+        })
+        .collect();
+
+    // Compute Y-axis bounds with padding
+    let (y_min, y_max) = graph_traces
+        .iter()
+        .flat_map(|(_, pts)| pts.iter().map(|p| p.1))
+        .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+
+    let y_range = y_max - y_min;
+    let y_pad = if y_range < 1.0 { 2.0 } else { y_range * 0.1 };
+    let y_lo = if y_min == f64::MAX {
+        0.0
+    } else {
+        (y_min - y_pad).max(0.0)
+    };
+    let y_hi = if y_max == f64::MIN {
+        100.0
+    } else {
+        y_max + y_pad
+    };
+
+    let x_max = graph_traces
+        .iter()
+        .map(|(_, pts)| pts.len())
+        .max()
+        .unwrap_or(1) as f64;
+
+    // Y-axis labels: 5 evenly spaced
+    let y_step = (y_hi - y_lo) / 4.0;
+    let y_labels: Vec<ratatui::text::Span> = (0..5)
+        .map(|i| {
+            let v = y_lo + y_step * i as f64;
+            ratatui::text::Span::styled(format!("{:>6.1}", v), Style::default().fg(Color::DarkGray))
+        })
+        .collect();
+
+    let mode_tabs = format!(
+        " {} ({}) | Tab/arrows: mode | g: hide ",
+        graph_mode.label(),
+        graph_mode.unit()
+    );
+
+    let chart = Chart::new(datasets)
+        .block(
+            Block::default()
+                .title(mode_tabs)
+                .title_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .x_axis(
+            Axis::default()
+                .style(Style::default().fg(Color::DarkGray))
+                .bounds([0.0, x_max]),
+        )
+        .y_axis(
+            Axis::default()
+                .style(Style::default().fg(Color::DarkGray))
+                .labels(y_labels)
+                .bounds([y_lo, y_hi]),
+        );
+
+    frame.render_widget(chart, graph_layout[0]);
+
+    // Legend panel
+    let mut legend_lines: Vec<ratatui::text::Line> = Vec::new();
+    for (i, (label, points)) in graph_traces.iter().enumerate() {
+        let color = GRAPH_COLORS[i % GRAPH_COLORS.len()];
+        let current = points.last().map(|p| p.1).unwrap_or(0.0);
+        let short_label = truncate_label(label, 14);
+        legend_lines.push(ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled("\u{2501}\u{2501} ", Style::default().fg(color)),
+            ratatui::text::Span::styled(
+                format!("{:<14}", short_label),
+                Style::default().fg(Color::White),
+            ),
+        ]));
+        legend_lines.push(ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(
+                format!("   {:>8.1} {}", current, graph_mode.unit()),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
+    let legend = Paragraph::new(legend_lines).block(
+        Block::default()
+            .title(" Legend ")
+            .title_style(Style::default().fg(Color::White))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    frame.render_widget(legend, graph_layout[1]);
+}
+
+/// Render the filter input bar.
+fn render_filter_bar(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    filter_mode: bool,
+    filter_query: &str,
+) {
+    let filter_text = if filter_mode {
+        format!(" / {}\u{2588}", filter_query)
+    } else {
+        format!(" / {} (Esc to clear)", filter_query)
+    };
+    let filter_style = if filter_mode {
+        Style::default().fg(Color::Black).bg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+    };
+    frame.render_widget(Paragraph::new(filter_text).style(filter_style), area);
+}
+
+/// Render the bottom status bar with keybindings, sensor count, and alerts.
+fn render_status_bar(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    ctx: &DrawContext<'_>,
+) {
+    let graph_hint = if ctx.graph_visible { "" } else { " | g: graph" };
+    let filter_hint = if ctx.filter_query.is_empty() && !ctx.filter_mode {
+        " | /: search"
+    } else {
+        ""
+    };
+    let status = if ctx.active_alerts.is_empty() {
+        format!(
+            " q: quit | \u{2191}\u{2193}: navigate | Enter: toggle | c/e: collapse/expand{}{} | Sensors: {} | Samples: {}{}",
+            graph_hint, filter_hint, ctx.sensor_count, ctx.max_samples, ctx.poll_warning
+        )
+    } else {
+        format!(
+            " \u{26a0} {} | {}{}",
+            ctx.active_alerts.join(" | "),
+            {
+                format!(
+                    "Sensors: {} | Samples: {}",
+                    ctx.sensor_count, ctx.max_samples
+                )
+            },
+            ctx.poll_warning
+        )
+    };
+    let status_style = if ctx.active_alerts.is_empty() {
+        Style::default().fg(Color::DarkGray).bg(Color::Black)
+    } else {
+        Style::default()
+            .fg(Color::Yellow)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    };
+    frame.render_widget(Paragraph::new(status).style(status_style), area);
 }
 
 /// Truncate a label to `max_chars` characters, appending "..." if needed.

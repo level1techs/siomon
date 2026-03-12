@@ -12,10 +12,8 @@
 //! the status value will be identical and we will not detect the repeat.
 //! The error_count is a lower bound, not an exact count.
 
-use std::path::{Path, PathBuf};
-
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
-use crate::platform::sysfs;
+use crate::platform::sysfs::{self, CachedFile};
 
 /// No error: all bits set (sysfs default when no MCE logged).
 const MCE_NO_ERROR: u64 = 0xFFFF_FFFF_FFFF_FFFF;
@@ -36,7 +34,7 @@ pub struct MceSource {
 }
 
 struct MceBankInfo {
-    path: PathBuf,
+    file: CachedFile,
     prev_status: u64,
     error_count: u64,
     uc_count: u64,
@@ -81,7 +79,10 @@ impl MceSource {
             };
 
             // Skip banks that are empty (unused/reserved)
-            let Some(initial) = read_mce_status(&bank_path) else {
+            let Some(mut file) = CachedFile::open(&bank_path) else {
+                continue;
+            };
+            let Some(initial) = read_mce_cached(&mut file) else {
                 continue;
             };
 
@@ -92,7 +93,7 @@ impl MceSource {
             };
 
             banks.push(MceBankInfo {
-                path: bank_path,
+                file,
                 prev_status: initial,
                 error_count: 0,
                 uc_count: 0,
@@ -128,7 +129,7 @@ impl super::SensorSource for MceSource {
         let mut readings = Vec::with_capacity(self.banks.len() * 2);
 
         for bank in &mut self.banks {
-            let status = match read_mce_status(&bank.path) {
+            let status = match read_mce_cached(&mut bank.file) {
                 Some(s) => s,
                 None => continue,
             };
@@ -170,18 +171,14 @@ impl super::SensorSource for MceSource {
     }
 }
 
-/// Read an MCE bank status register from sysfs.
+/// Read an MCE bank status register via cached file handle.
 /// Returns `None` if the file is empty or unreadable (unused bank).
-fn read_mce_status(path: &Path) -> Option<u64> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let hex = trimmed
+fn read_mce_cached(file: &mut CachedFile) -> Option<u64> {
+    let raw = file.read_raw()?;
+    let hex = raw
         .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-        .unwrap_or(trimmed);
+        .or_else(|| raw.strip_prefix("0X"))
+        .unwrap_or(raw);
     u64::from_str_radix(hex, 16).ok()
 }
 

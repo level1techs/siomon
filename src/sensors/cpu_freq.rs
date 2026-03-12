@@ -1,14 +1,14 @@
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
-use crate::platform::sysfs;
-use std::path::PathBuf;
+use crate::platform::sysfs::{self, CachedFile};
 
 pub struct CpuFreqSource {
     cpus: Vec<CpuFreqEntry>,
 }
 
 struct CpuFreqEntry {
-    index: u32,
-    freq_path: PathBuf,
+    id: SensorId,
+    label: String,
+    freq_file: CachedFile,
 }
 
 impl CpuFreqSource {
@@ -31,35 +31,42 @@ impl CpuFreqSource {
                 None => continue,
             };
 
+            let Some(freq_file) = CachedFile::open(&path) else {
+                continue;
+            };
+
             cpus.push(CpuFreqEntry {
-                index: idx,
-                freq_path: path,
+                id: SensorId {
+                    source: "cpu".into(),
+                    chip: "cpufreq".into(),
+                    sensor: format!("cpu{idx}"),
+                },
+                label: format!("Core {idx} Frequency"),
+                freq_file,
             });
         }
 
-        cpus.sort_by_key(|e| e.index);
+        cpus.sort_by(|a, b| a.id.natural_cmp(&b.id));
 
         Self { cpus }
     }
 
-    pub fn poll(&self) -> Vec<(SensorId, SensorReading)> {
+    pub fn poll(&mut self) -> Vec<(SensorId, SensorReading)> {
         let mut readings = Vec::new();
 
-        for entry in &self.cpus {
-            let Some(khz) = sysfs::read_u64_optional(&entry.freq_path) else {
+        for entry in &mut self.cpus {
+            let Some(khz) = entry.freq_file.read_u64() else {
                 continue;
             };
             let mhz = khz as f64 / 1000.0;
 
-            let id = SensorId {
-                source: "cpu".into(),
-                chip: "cpufreq".into(),
-                sensor: format!("cpu{}", entry.index),
-            };
-            let label = format!("Core {} Frequency", entry.index);
-            let reading =
-                SensorReading::new(label, mhz, SensorUnit::Mhz, SensorCategory::Frequency);
-            readings.push((id, reading));
+            let reading = SensorReading::new(
+                entry.label.clone(),
+                mhz,
+                SensorUnit::Mhz,
+                SensorCategory::Frequency,
+            );
+            readings.push((entry.id.clone(), reading));
         }
 
         readings

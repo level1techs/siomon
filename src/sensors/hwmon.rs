@@ -1,7 +1,7 @@
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
-use crate::platform::sysfs;
+use crate::platform::sysfs::{self, CachedFile};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub struct HwmonSource {
     chips: Vec<ChipSensors>,
@@ -14,7 +14,7 @@ struct ChipSensors {
 struct SensorEntry {
     id: SensorId,
     label: String,
-    input_path: PathBuf,
+    input_file: CachedFile,
     category: SensorCategory,
     unit: SensorUnit,
     divisor: f64,
@@ -89,12 +89,12 @@ impl HwmonSource {
         Self { chips }
     }
 
-    pub fn poll(&self) -> Vec<(SensorId, SensorReading)> {
+    pub fn poll(&mut self) -> Vec<(SensorId, SensorReading)> {
         let mut readings = Vec::new();
 
-        for chip in &self.chips {
-            for entry in &chip.entries {
-                if let Some(raw) = sysfs::read_u64_optional(&entry.input_path) {
+        for chip in &mut self.chips {
+            for entry in &mut chip.entries {
+                if let Some(raw) = entry.input_file.read_u64() {
                     // Some sensors report 0 when disconnected/absent
                     let value = raw as f64 / entry.divisor;
                     let reading =
@@ -156,10 +156,14 @@ fn discover_type(
             sysfs::read_string_optional(&label_path).unwrap_or_else(|| format!("{prefix}{idx}"))
         };
 
+        let Some(input_file) = CachedFile::open(&input_path) else {
+            continue;
+        };
+
         entries.push(SensorEntry {
             id,
             label,
-            input_path,
+            input_file,
             category,
             unit,
             divisor,
@@ -221,10 +225,14 @@ fn discover_power(
                 sysfs::read_string_optional(&label_path).unwrap_or_else(|| id.sensor.clone())
             };
 
+            let Some(input_file) = CachedFile::open(&path) else {
+                continue;
+            };
+
             entries.push(SensorEntry {
                 id,
                 label,
-                input_path: path,
+                input_file,
                 category: SensorCategory::Power,
                 unit: SensorUnit::Watts,
                 divisor: 1_000_000.0,

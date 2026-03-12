@@ -6,14 +6,16 @@
 
 #[cfg(target_arch = "x86_64")]
 mod inner {
-    use std::fs::OpenOptions;
+    use std::fs::{File, OpenOptions};
     use std::os::unix::io::AsRawFd;
 
     use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
 
     // HSMP ioctl: _IOWR(0xF8, 0, hsmp_message)
-    // The kernel accepts both size=42 and size=44. We use 42 to match
-    // the unpacked struct layout the kernel driver actually checks.
+    // The ioctl number encodes size=42 (the kernel's unpacked field sum).
+    // Our #[repr(C, packed(4))] struct is 44 bytes due to trailing padding
+    // on sock_ind (u16 → 4-byte boundary). The kernel reads 42 bytes via
+    // copy_from_user, so the 2-byte tail padding is never accessed.
     const HSMP_IOCTL: libc::c_ulong = 0xC02AF800;
 
     // Message IDs
@@ -38,42 +40,50 @@ mod inner {
     }
 
     pub struct HsmpSource {
-        available: bool,
+        fd: Option<File>,
     }
 
     impl HsmpSource {
         pub fn discover() -> Self {
             if !std::path::Path::new("/dev/hsmp").exists() {
                 log::debug!("HSMP: /dev/hsmp not found");
-                return Self { available: false };
+                return Self { fd: None };
             }
 
+            let file = match OpenOptions::new().read(true).write(true).open("/dev/hsmp") {
+                Ok(f) => f,
+                Err(e) => {
+                    log::debug!("HSMP: failed to open /dev/hsmp: {}", e);
+                    return Self { fd: None };
+                }
+            };
+
             // Verify with HSMP_TEST
-            match hsmp_call(HSMP_TEST, 1, 1, &[42], 0) {
+            match hsmp_call_fd(&file, HSMP_TEST, 1, 1, &[42], 0) {
                 Ok(args) if args[0] == 43 => {}
                 _ => {
                     log::debug!("HSMP: test message failed");
-                    return Self { available: false };
+                    return Self { fd: None };
                 }
             }
 
-            let proto_ver = hsmp_call(HSMP_GET_PROTO_VER, 0, 1, &[], 0)
+            let proto_ver = hsmp_call_fd(&file, HSMP_GET_PROTO_VER, 0, 1, &[], 0)
                 .map(|a| a[0])
                 .unwrap_or(0);
 
             log::info!("HSMP sensor source available (proto v{})", proto_ver);
-            Self { available: true }
+            Self { fd: Some(file) }
         }
 
         pub fn poll(&self) -> Vec<(SensorId, SensorReading)> {
-            if !self.available {
+            let Some(fd) = &self.fd else {
                 return Vec::new();
-            }
+            };
 
             let mut readings = Vec::new();
 
             // Socket power (mW)
-            if let Ok(args) = hsmp_call(HSMP_GET_SOCKET_POWER, 0, 1, &[], 0).map_err(|e| {
+            if let Ok(args) = hsmp_call_fd(fd, HSMP_GET_SOCKET_POWER, 0, 1, &[], 0).map_err(|e| {
                 log::debug!("HSMP GET_SOCKET_POWER failed: {}", e);
                 e
             }) {
@@ -88,7 +98,7 @@ mod inner {
             }
 
             // Socket power limit (mW)
-            if let Ok(args) = hsmp_call(HSMP_GET_SOCKET_POWER_LIMIT, 0, 1, &[], 0) {
+            if let Ok(args) = hsmp_call_fd(fd, HSMP_GET_SOCKET_POWER_LIMIT, 0, 1, &[], 0) {
                 let watts = args[0] as f64 / 1000.0;
                 readings.push(sensor(
                     "socket_power_limit",
@@ -100,7 +110,7 @@ mod inner {
             }
 
             // SVI rails power (mW)
-            if let Ok(args) = hsmp_call(HSMP_GET_RAILS_SVI, 0, 1, &[], 0) {
+            if let Ok(args) = hsmp_call_fd(fd, HSMP_GET_RAILS_SVI, 0, 1, &[], 0) {
                 let watts = args[0] as f64 / 1000.0;
                 readings.push(sensor(
                     "svi_power",
@@ -112,7 +122,7 @@ mod inner {
             }
 
             // FCLK / MCLK
-            if let Ok(args) = hsmp_call(HSMP_GET_FCLK_MCLK, 0, 2, &[], 0) {
+            if let Ok(args) = hsmp_call_fd(fd, HSMP_GET_FCLK_MCLK, 0, 2, &[], 0) {
                 readings.push(sensor(
                     "fclk",
                     "Fabric Clock",
@@ -130,7 +140,7 @@ mod inner {
             }
 
             // CCLK throttle limit
-            if let Ok(args) = hsmp_call(HSMP_GET_CCLK_THROTTLE_LIMIT, 0, 1, &[], 0) {
+            if let Ok(args) = hsmp_call_fd(fd, HSMP_GET_CCLK_THROTTLE_LIMIT, 0, 1, &[], 0) {
                 readings.push(sensor(
                     "cclk_limit",
                     "CCLK Throttle Limit",
@@ -141,7 +151,7 @@ mod inner {
             }
 
             // C0 residency
-            if let Ok(args) = hsmp_call(HSMP_GET_C0_PERCENT, 0, 1, &[], 0) {
+            if let Ok(args) = hsmp_call_fd(fd, HSMP_GET_C0_PERCENT, 0, 1, &[], 0) {
                 readings.push(sensor(
                     "c0_residency",
                     "C0 Residency",
@@ -152,7 +162,7 @@ mod inner {
             }
 
             // DDR bandwidth: max[31:20] used[19:8] pct[7:0]
-            if let Ok(args) = hsmp_call(HSMP_GET_DDR_BANDWIDTH, 0, 1, &[], 0) {
+            if let Ok(args) = hsmp_call_fd(fd, HSMP_GET_DDR_BANDWIDTH, 0, 1, &[], 0) {
                 let max_gbps = ((args[0] >> 20) & 0xFFF) as f64;
                 let used_gbps = ((args[0] >> 8) & 0xFFF) as f64;
                 let pct = (args[0] & 0xFF) as f64;
@@ -180,7 +190,7 @@ mod inner {
             }
 
             // Fmax / Fmin: fmax[31:16] fmin[15:0]
-            if let Ok(args) = hsmp_call(HSMP_GET_SOCKET_FMAX_FMIN, 0, 1, &[], 0) {
+            if let Ok(args) = hsmp_call_fd(fd, HSMP_GET_SOCKET_FMAX_FMIN, 0, 1, &[], 0) {
                 let fmax = ((args[0] >> 16) & 0xFFFF) as f64;
                 let fmin = (args[0] & 0xFFFF) as f64;
                 readings.push(sensor(
@@ -203,7 +213,7 @@ mod inner {
         }
 
         pub fn is_available(&self) -> bool {
-            self.available
+            self.fd.is_some()
         }
     }
 
@@ -235,18 +245,14 @@ mod inner {
         )
     }
 
-    fn hsmp_call(
+    fn hsmp_call_fd(
+        file: &File,
         msg_id: u32,
         num_args: u16,
         response_sz: u16,
         args_in: &[u32],
         sock: u16,
     ) -> std::io::Result<[u32; 8]> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/hsmp")?;
-
         let mut msg = HsmpMessage {
             msg_id,
             num_args,
@@ -321,7 +327,8 @@ mod tests {
             args: [u32; 8],
             sock_ind: u16,
         }
-        // 44 bytes: pack(4) pads sock_ind (u16) to 4-byte boundary
+        // Field sum = 42; packed(4) pads sock_ind to 4-byte boundary → 44.
+        // The ioctl number encodes 42; kernel reads 42 via copy_from_user.
         assert_eq!(std::mem::size_of::<HsmpMessageTest>(), 44);
     }
 }

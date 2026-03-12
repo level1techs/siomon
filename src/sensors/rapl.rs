@@ -1,6 +1,5 @@
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
-use crate::platform::sysfs;
-use std::path::PathBuf;
+use crate::platform::sysfs::{self, CachedFile};
 use std::time::Instant;
 
 pub struct RaplSource {
@@ -9,7 +8,7 @@ pub struct RaplSource {
 
 struct RaplDomain {
     name: String,
-    energy_path: PathBuf,
+    energy_file: CachedFile,
     max_energy: u64,
     prev_energy: u64,
     prev_time: Instant,
@@ -41,9 +40,13 @@ impl RaplSource {
                 None => continue,
             };
 
+            let Some(energy_file) = CachedFile::open(&energy_path) else {
+                continue;
+            };
+
             domains.push(RaplDomain {
                 name,
-                energy_path,
+                energy_file,
                 max_energy,
                 prev_energy,
                 prev_time: Instant::now(),
@@ -58,7 +61,7 @@ impl RaplSource {
         let now = Instant::now();
 
         for domain in &mut self.domains {
-            let Some(energy) = sysfs::read_u64_optional(&domain.energy_path) else {
+            let Some(energy) = domain.energy_file.read_u64() else {
                 continue;
             };
 

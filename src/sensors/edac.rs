@@ -4,11 +4,9 @@
 //! uncorrectable memory error counters. Uses board template DIMM labels
 //! to map EDAC rank IDs to physical slot names.
 
-use std::path::PathBuf;
-
 use crate::db::boards;
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
-use crate::platform::sysfs;
+use crate::platform::sysfs::{self, CachedFile};
 
 /// EDAC memory error counter source.
 pub struct EdacSource {
@@ -18,8 +16,8 @@ pub struct EdacSource {
 }
 
 struct EdacRank {
-    ce_path: PathBuf,
-    ue_path: PathBuf,
+    ce_file: CachedFile,
+    ue_file: CachedFile,
     ce_id: SensorId,
     ue_id: SensorId,
     ce_label: String,
@@ -27,8 +25,8 @@ struct EdacRank {
 }
 
 struct McTotal {
-    ce_path: PathBuf,
-    ue_path: PathBuf,
+    ce_file: CachedFile,
+    ue_file: CachedFile,
     ce_id: SensorId,
     ue_id: SensorId,
     ce_label: String,
@@ -58,10 +56,12 @@ impl EdacSource {
             // Top-level MC summary counters
             let mc_ce = mc_dir.join("ce_count");
             let mc_ue = mc_dir.join("ue_count");
-            if mc_ce.exists() {
+            if let (Some(ce_file), Some(ue_file)) =
+                (CachedFile::open(&mc_ce), CachedFile::open(&mc_ue))
+            {
                 mc_totals.push(McTotal {
-                    ce_path: mc_ce,
-                    ue_path: mc_ue,
+                    ce_file,
+                    ue_file,
                     ce_id: SensorId {
                         source: "edac".into(),
                         chip: chip.clone(),
@@ -92,9 +92,12 @@ impl EdacSource {
                 let ce_path = rank_dir.join("dimm_ce_count");
                 let ue_path = rank_dir.join("dimm_ue_count");
 
-                if !ce_path.exists() {
+                let Some(ce_file) = CachedFile::open(&ce_path) else {
                     continue;
-                }
+                };
+                let Some(ue_file) = CachedFile::open(&ue_path) else {
+                    continue;
+                };
 
                 // Resolve label: board template → sysfs dimm_label → generic
                 let slot_label = board
@@ -108,8 +111,8 @@ impl EdacSource {
                     .unwrap_or_else(|| format!("mc{mc_idx} rank{rank_idx}"));
 
                 ranks.push(EdacRank {
-                    ce_path,
-                    ue_path,
+                    ce_file,
+                    ue_file,
                     ce_id: SensorId {
                         source: "edac".into(),
                         chip: chip.clone(),
@@ -143,8 +146,8 @@ impl super::SensorSource for EdacSource {
         let mut readings = Vec::new();
 
         // Per-rank counters
-        for rank in &self.ranks {
-            if let Some(ce) = sysfs::read_u64_optional(&rank.ce_path) {
+        for rank in &mut self.ranks {
+            if let Some(ce) = rank.ce_file.read_u64() {
                 readings.push((
                     rank.ce_id.clone(),
                     SensorReading::new(
@@ -155,7 +158,7 @@ impl super::SensorSource for EdacSource {
                     ),
                 ));
             }
-            if let Some(ue) = sysfs::read_u64_optional(&rank.ue_path) {
+            if let Some(ue) = rank.ue_file.read_u64() {
                 readings.push((
                     rank.ue_id.clone(),
                     SensorReading::new(
@@ -169,8 +172,8 @@ impl super::SensorSource for EdacSource {
         }
 
         // MC-level totals
-        for mc in &self.mc_totals {
-            if let Some(ce) = sysfs::read_u64_optional(&mc.ce_path) {
+        for mc in &mut self.mc_totals {
+            if let Some(ce) = mc.ce_file.read_u64() {
                 readings.push((
                     mc.ce_id.clone(),
                     SensorReading::new(
@@ -181,7 +184,7 @@ impl super::SensorSource for EdacSource {
                     ),
                 ));
             }
-            if let Some(ue) = sysfs::read_u64_optional(&mc.ue_path) {
+            if let Some(ue) = mc.ue_file.read_u64() {
                 readings.push((
                     mc.ue_id.clone(),
                     SensorReading::new(
