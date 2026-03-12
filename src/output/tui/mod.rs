@@ -17,6 +17,14 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::sensors::poller::PollStatsState;
 
+mod dashboard;
+
+#[derive(Clone, Copy, PartialEq)]
+enum ViewMode {
+    Tree,
+    Dashboard,
+}
+
 /// Maximum number of data points to retain per sensor for sparklines.
 const HISTORY_LEN: usize = 300;
 
@@ -25,39 +33,51 @@ const SPARK_CHARS: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', 
 
 /// Render a `VecDeque<f64>` as a sparkline string of `width` characters.
 /// Values are normalized to the min/max range of the visible window.
-fn sparkline_str(data: &VecDeque<f64>, width: usize) -> String {
+pub(crate) fn sparkline_str(data: &VecDeque<f64>, width: usize) -> String {
     if data.is_empty() || width == 0 {
         return String::new();
     }
     let start = data.len().saturating_sub(width);
-    let points: Vec<f64> = data
-        .iter()
-        .skip(start)
-        .copied()
-        .filter(|v| v.is_finite())
-        .collect();
-    if points.is_empty() {
+
+    // First pass: find min/max over finite values in the window.
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    let mut has_finite = false;
+    for &v in data.iter().skip(start) {
+        if v.is_finite() {
+            has_finite = true;
+            if v < min {
+                min = v;
+            }
+            if v > max {
+                max = v;
+            }
+        }
+    }
+    if !has_finite {
         return String::new();
     }
-    let min = points.iter().copied().fold(f64::MAX, f64::min);
-    let max = points.iter().copied().fold(f64::MIN, f64::max);
     let range = max - min;
-    points
-        .iter()
-        .map(|&v| {
-            let idx = if range < f64::EPSILON {
-                3 // flat line -> mid height
-            } else {
-                ((v - min) / range * 7.0).round() as usize
-            };
-            SPARK_CHARS[idx.min(7)]
-        })
-        .collect()
+
+    // Second pass: build sparkline directly into a pre-sized String.
+    let mut out = String::with_capacity(width * 3); // UTF-8 block chars are 3 bytes
+    for &v in data.iter().skip(start) {
+        if !v.is_finite() {
+            continue;
+        }
+        let idx = if range < f64::EPSILON {
+            3 // flat line -> mid height
+        } else {
+            ((v - min) / range * 7.0).round() as usize
+        };
+        out.push(SPARK_CHARS[idx.min(7)]);
+    }
+    out
 }
 
 /// Per-sensor history ring buffer for sparklines.
-struct SensorHistory {
-    data: HashMap<String, VecDeque<f64>>,
+pub(crate) struct SensorHistory {
+    pub(crate) data: HashMap<String, VecDeque<f64>>,
 }
 
 impl SensorHistory {
@@ -97,11 +117,22 @@ pub fn run(
     // Enter alternate screen, then enable button-event mouse mode (1002) + SGR
     // encoding (1006). Mode 1002 captures clicks and scroll wheel but NOT plain
     // mouse movement, avoiding unnecessary redraws on hover.
-    execute!(stdout, EnterAlternateScreen)?;
-    stdout.write_all(b"\x1b[?1002h\x1b[?1006h")?;
-    stdout.flush()?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let setup_result = (|| -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
+        execute!(stdout, EnterAlternateScreen)?;
+        stdout.write_all(b"\x1b[?1002h\x1b[?1006h")?;
+        stdout.flush()?;
+        let backend = CrosstermBackend::new(stdout);
+        Terminal::new(backend)
+    })();
+
+    let mut terminal = match setup_result {
+        Ok(t) => t,
+        Err(e) => {
+            // Setup failed — best-effort cleanup before propagating error
+            let _ = disable_raw_mode();
+            return Err(e);
+        }
+    };
 
     let result = run_loop(
         &mut terminal,
@@ -132,9 +163,14 @@ fn run_loop(
     let mut scroll_offset: usize = 0;
     let mut collapsed: HashSet<String> = HashSet::new();
     let mut cursor: usize = 0;
-    let mut last_total_rows: usize;
+    let mut last_total_rows: usize = 0;
+    let mut group_indices: Vec<usize> = Vec::new();
+    let mut collapse_key_vec: Vec<String> = Vec::new();
     let mut alert_engine = crate::sensors::alerts::AlertEngine::new(alert_rules);
     let mut active_alerts: Vec<String> = Vec::new();
+
+    // View mode
+    let mut view_mode = ViewMode::Tree;
 
     // Search/filter state
     let mut filter_mode = false;
@@ -178,65 +214,74 @@ fn run_loop(
         // Record sensor values for sparklines
         history.push(&snapshot);
 
-        let filter_lc = filter_query.to_ascii_lowercase();
-        let (display_rows, group_indices, collapse_key_vec) =
-            build_rows(&snapshot, &collapsed, &filter_lc, &history);
-        last_total_rows = display_rows.len();
-
-        // Clamp scroll and cursor
-        scroll_offset = scroll_offset.min(last_total_rows.saturating_sub(1));
-        if !group_indices.is_empty() {
-            cursor = cursor.min(group_indices.len() - 1);
-        }
-
         let sensor_count = snapshot.len();
-        let max_samples = snapshot
-            .iter()
-            .map(|(_, r)| r.sample_count)
-            .max()
-            .unwrap_or(0);
-
         let elapsed_str = format_elapsed(elapsed);
-        let collapsed_count = collapsed.len();
 
-        // Build poll timing warning string
-        let poll_warning = {
-            let stats = poll_stats.read().unwrap_or_else(|e| e.into_inner());
-            if stats.cycle_duration_ms > 500 {
-                let slow: Vec<String> = stats
-                    .source_durations
+        match view_mode {
+            ViewMode::Tree => {
+                let filter_lc = filter_query.to_ascii_lowercase();
+                let (display_rows, group_indices_new, collapse_key_vec_new) =
+                    build_rows(&snapshot, &collapsed, &filter_lc, &history);
+                group_indices = group_indices_new;
+                collapse_key_vec = collapse_key_vec_new;
+                last_total_rows = display_rows.len();
+
+                // Clamp scroll and cursor
+                scroll_offset = scroll_offset.min(last_total_rows.saturating_sub(1));
+                if !group_indices.is_empty() {
+                    cursor = cursor.min(group_indices.len() - 1);
+                }
+
+                let max_samples = snapshot
                     .iter()
-                    .filter(|&(_, &ms)| ms > 100)
-                    .map(|(name, ms)| format!("{name}: {ms}ms"))
-                    .collect();
-                format!(
-                    " | poll: {}ms [{}]",
-                    stats.cycle_duration_ms,
-                    if slow.is_empty() {
-                        "aggregate".into()
-                    } else {
-                        slow.join(", ")
-                    }
-                )
-            } else {
-                String::new()
-            }
-        };
+                    .map(|(_, r)| r.sample_count)
+                    .max()
+                    .unwrap_or(0);
+                let collapsed_count = collapsed.len();
 
-        let ctx = DrawContext {
-            group_indices: &group_indices,
-            cursor,
-            scroll_offset,
-            sensor_count,
-            max_samples,
-            collapsed_count,
-            elapsed_str: &elapsed_str,
-            active_alerts: &active_alerts,
-            poll_warning: &poll_warning,
-            filter_mode,
-            filter_query: &filter_query,
-        };
-        draw(terminal, display_rows, &ctx)?;
+                // Build poll timing warning string
+                let poll_warning = {
+                    let stats = poll_stats.read().unwrap_or_else(|e| e.into_inner());
+                    if stats.cycle_duration_ms > 500 {
+                        let slow: Vec<String> = stats
+                            .source_durations
+                            .iter()
+                            .filter(|&(_, &ms)| ms > 100)
+                            .map(|(name, ms)| format!("{name}: {ms}ms"))
+                            .collect();
+                        format!(
+                            " | poll: {}ms [{}]",
+                            stats.cycle_duration_ms,
+                            if slow.is_empty() {
+                                "aggregate".into()
+                            } else {
+                                slow.join(", ")
+                            }
+                        )
+                    } else {
+                        String::new()
+                    }
+                };
+
+                let ctx = DrawContext {
+                    group_indices: &group_indices,
+                    cursor,
+                    scroll_offset,
+                    sensor_count,
+                    max_samples,
+                    collapsed_count,
+                    elapsed_str: &elapsed_str,
+                    active_alerts: &active_alerts,
+                    poll_warning: &poll_warning,
+                    filter_mode,
+                    filter_query: &filter_query,
+                };
+                draw(terminal, display_rows, &ctx)?;
+            }
+            ViewMode::Dashboard => {
+                dashboard::render(terminal, &snapshot, &history, &elapsed_str, sensor_count)?;
+            }
+        }
 
         // Wait for next tick or meaningful input event.
         let timeout = Duration::from_millis(poll_interval_ms);
@@ -273,6 +318,7 @@ fn run_loop(
                             }
                         } else {
                             match key.code {
+                                // Universal keys (both views)
                                 KeyCode::Char('q') => return Ok(()),
                                 KeyCode::Esc => {
                                     if !filter_query.is_empty() {
@@ -283,10 +329,19 @@ fn run_loop(
                                         return Ok(());
                                     }
                                 }
+                                KeyCode::Char('d') => {
+                                    view_mode = match view_mode {
+                                        ViewMode::Tree => ViewMode::Dashboard,
+                                        ViewMode::Dashboard => ViewMode::Tree,
+                                    };
+                                }
                                 KeyCode::Char('/') => {
+                                    // Switch to tree view if in dashboard
+                                    view_mode = ViewMode::Tree;
                                     filter_mode = true;
                                 }
-                                KeyCode::Up | KeyCode::Char('k') => {
+                                // Tree-only keys
+                                KeyCode::Up | KeyCode::Char('k') if view_mode == ViewMode::Tree => {
                                     if cursor > 0 {
                                         cursor -= 1;
                                         if let Some(&row_idx) = group_indices.get(cursor) {
@@ -296,7 +351,9 @@ fn run_loop(
                                         }
                                     }
                                 }
-                                KeyCode::Down | KeyCode::Char('j') => {
+                                KeyCode::Down | KeyCode::Char('j')
+                                    if view_mode == ViewMode::Tree =>
+                                {
                                     if cursor + 1 < group_indices.len() {
                                         cursor += 1;
                                         if let Some(&row_idx) = group_indices.get(cursor) {
@@ -308,7 +365,9 @@ fn run_loop(
                                         }
                                     }
                                 }
-                                KeyCode::Enter | KeyCode::Char(' ') => {
+                                KeyCode::Enter | KeyCode::Char(' ')
+                                    if view_mode == ViewMode::Tree =>
+                                {
                                     if let Some(key) = collapse_key_vec.get(cursor) {
                                         if collapsed.contains(key) {
                                             collapsed.remove(key);
@@ -317,15 +376,15 @@ fn run_loop(
                                         }
                                     }
                                 }
-                                KeyCode::Char('c') => {
+                                KeyCode::Char('c') if view_mode == ViewMode::Tree => {
                                     for key in all_collapse_keys(&snapshot) {
                                         collapsed.insert(key);
                                     }
                                 }
-                                KeyCode::Char('e') => {
+                                KeyCode::Char('e') if view_mode == ViewMode::Tree => {
                                     collapsed.clear();
                                 }
-                                KeyCode::PageUp => {
+                                KeyCode::PageUp if view_mode == ViewMode::Tree => {
                                     scroll_offset = scroll_offset.saturating_sub(20);
                                     while cursor > 0 {
                                         if let Some(&ri) = group_indices.get(cursor) {
@@ -336,7 +395,7 @@ fn run_loop(
                                         cursor -= 1;
                                     }
                                 }
-                                KeyCode::PageDown => {
+                                KeyCode::PageDown if view_mode == ViewMode::Tree => {
                                     scroll_offset = scroll_offset.saturating_add(20);
                                     while cursor + 1 < group_indices.len() {
                                         if let Some(&ri) = group_indices.get(cursor) {
@@ -347,11 +406,11 @@ fn run_loop(
                                         cursor += 1;
                                     }
                                 }
-                                KeyCode::Home => {
+                                KeyCode::Home if view_mode == ViewMode::Tree => {
                                     scroll_offset = 0;
                                     cursor = 0;
                                 }
-                                KeyCode::End => {
+                                KeyCode::End if view_mode == ViewMode::Tree => {
                                     scroll_offset = last_total_rows.saturating_sub(1);
                                     cursor = group_indices.len().saturating_sub(1);
                                 }
@@ -975,7 +1034,7 @@ fn render_status_bar(
     frame.render_widget(Paragraph::new(status).style(status_style), area);
 }
 
-fn format_precision(unit: &SensorUnit) -> usize {
+pub(crate) fn format_precision(unit: &SensorUnit) -> usize {
     match unit {
         SensorUnit::Celsius
         | SensorUnit::Volts
@@ -993,7 +1052,7 @@ fn format_precision(unit: &SensorUnit) -> usize {
     }
 }
 
-fn value_style(reading: &SensorReading) -> Style {
+pub(crate) fn value_style(reading: &SensorReading) -> Style {
     match reading.category {
         SensorCategory::Temperature => {
             if reading.current > 80.0 {
