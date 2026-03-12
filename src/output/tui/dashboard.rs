@@ -461,10 +461,9 @@ fn build_storage_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<
     let mut devices: HashMap<&str, (Option<f64>, Option<f64>)> = HashMap::new();
     for (id, r) in &disk_sensors {
         let entry = devices.entry(id.chip.as_str()).or_insert((None, None));
-        let sensor_lc = id.sensor.to_ascii_lowercase();
-        if sensor_lc.contains("read") {
+        if id.sensor == "read_mbps" {
             entry.0 = Some(r.current);
-        } else if sensor_lc.contains("write") {
+        } else if id.sensor == "write_mbps" {
             entry.1 = Some(r.current);
         }
     }
@@ -516,13 +515,9 @@ fn build_network_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<
     let mut ifaces: HashMap<&str, (Option<f64>, Option<f64>)> = HashMap::new();
     for (id, r) in &net_sensors {
         let entry = ifaces.entry(id.chip.as_str()).or_insert((None, None));
-        let sensor_lc = id.sensor.to_ascii_lowercase();
-        if sensor_lc.contains("rx") || sensor_lc.contains("read") || sensor_lc.contains("down") {
+        if id.sensor == "rx_mbps" {
             entry.0 = Some(r.current);
-        } else if sensor_lc.contains("tx")
-            || sensor_lc.contains("write")
-            || sensor_lc.contains("up")
-        {
+        } else if id.sensor == "tx_mbps" {
             entry.1 = Some(r.current);
         }
     }
