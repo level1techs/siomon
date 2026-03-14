@@ -744,19 +744,20 @@ fn build_errors_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<P
 // ---------------------------------------------------------------------------
 
 /// Network activity bar. Uses link-speed utilization when available,
-/// falls back to log-scale (0.01–1000+ MB/s) otherwise.
-fn net_bar(mbps: f64, link_speed_mb: Option<f64>, width: usize) -> String {
-    let frac = if let Some(speed) = link_speed_mb {
+/// falls back to log-scale (0.01–1000+ MiB/s) otherwise.
+/// Both `mibs` and `link_speed_mibs` are in MiB/s (binary megabytes/sec).
+fn net_bar(mibs: f64, link_speed_mibs: Option<f64>, width: usize) -> String {
+    let frac = if let Some(speed) = link_speed_mibs {
         if speed > 0.0 {
-            (mbps / speed).clamp(0.0, 1.0)
+            (mibs / speed).clamp(0.0, 1.0)
         } else {
             0.0
         }
-    } else if mbps <= 0.001 {
+    } else if mibs <= 0.001 {
         0.0
     } else {
-        // Log scale: 0.01 MB/s → 0.0, 1000 MB/s → 1.0
-        ((mbps.log10() + 2.0) / 5.0).clamp(0.0, 1.0)
+        // Log scale: 0.01 MiB/s → 0.0, 1000 MiB/s → 1.0
+        ((mibs.log10() + 2.0) / 5.0).clamp(0.0, 1.0)
     };
     let filled = (frac * width as f64).ceil() as usize;
     (0..width)

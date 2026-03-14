@@ -14,8 +14,8 @@ struct NetInterface {
     tx_file: CachedFile,
     prev_rx: u64,
     prev_tx: u64,
-    /// Link speed in Mbit/s from sysfs, if available.
-    link_speed_mbit: Option<u64>,
+    /// Sysfs speed file, re-read each poll to track link renegotiation.
+    speed_file: Option<CachedFile>,
 }
 
 impl NetworkStatsSource {
@@ -47,9 +47,7 @@ impl NetworkStatsSource {
                 continue;
             };
 
-            // Link speed in Mbit/s (sysfs returns -1 as u32::MAX when link is down)
-            let link_speed_mbit = sysfs::read_u64_optional(&dir.join("speed"))
-                .filter(|&s| s > 0 && s < u32::MAX as u64);
+            let speed_file = CachedFile::open(dir.join("speed"));
 
             interfaces.push(NetInterface {
                 name: iface,
@@ -57,7 +55,7 @@ impl NetworkStatsSource {
                 tx_file,
                 prev_rx,
                 prev_tx,
-                link_speed_mbit,
+                speed_file,
             });
         }
 
@@ -123,8 +121,14 @@ impl NetworkStatsSource {
                 ),
             ));
 
-            // Link speed in MiB/s (Mbit/s × 1e6 / 8 / 1048576) to match rx/tx units
-            if let Some(speed_mbit) = iface.link_speed_mbit {
+            // Link speed in MiB/s (re-read each poll to track renegotiation).
+            // Sysfs reports -1 (parsed as large u64) when link is down.
+            if let Some(speed_mbit) = iface
+                .speed_file
+                .as_mut()
+                .and_then(|f| f.read_u64())
+                .filter(|&s| s > 0 && s < u32::MAX as u64)
+            {
                 let speed_id = SensorId {
                     source: "net".into(),
                     chip: iface.name.clone(),
