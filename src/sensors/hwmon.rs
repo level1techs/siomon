@@ -3,6 +3,24 @@ use crate::platform::sysfs::{self, CachedFile};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Hwmon chip names belonging to GPU drivers. Labels from these chips are
+/// auto-prefixed with "GPU " to avoid ambiguity with CPU-side names (e.g.
+/// amdgpu's "PPT" label vs CPU Package Power Tracking).
+const GPU_HWMON_CHIPS: &[&str] = &["amdgpu", "nouveau", "i915", "xe"];
+
+fn is_gpu_hwmon_chip(chip_name: &str) -> bool {
+    GPU_HWMON_CHIPS.contains(&chip_name)
+}
+
+/// Prefix a GPU hwmon label with "GPU " if it doesn't already start with "GPU".
+fn gpu_prefix_label(label: String) -> String {
+    if label.starts_with("GPU") {
+        label
+    } else {
+        format!("GPU {label}")
+    }
+}
+
 pub struct HwmonSource {
     chips: Vec<ChipSensors>,
 }
@@ -148,12 +166,20 @@ fn discover_type(
             sensor: sensor_name,
         };
 
-        // Check label overrides first, then fall back to sysfs label file
+        // Check label overrides first, then fall back to sysfs label file.
+        // GPU hwmon labels are auto-prefixed with "GPU " to avoid ambiguity.
         let label = if let Some(override_label) = label_overrides.get(&id.to_string()) {
             override_label.clone()
         } else {
-            let label_path = hwmon_dir.join(format!("{prefix}{idx}_label"));
-            sysfs::read_string_optional(&label_path).unwrap_or_else(|| format!("{prefix}{idx}"))
+            let raw = {
+                let label_path = hwmon_dir.join(format!("{prefix}{idx}_label"));
+                sysfs::read_string_optional(&label_path).unwrap_or_else(|| format!("{prefix}{idx}"))
+            };
+            if is_gpu_hwmon_chip(chip_name) {
+                gpu_prefix_label(raw)
+            } else {
+                raw
+            }
         };
 
         let Some(input_file) = CachedFile::open(&input_path) else {
@@ -217,12 +243,20 @@ fn discover_power(
                 sensor: sensor_name,
             };
 
-            // Check label overrides first, then fall back to sysfs label file
+            // Check label overrides first, then fall back to sysfs label file.
+            // GPU hwmon labels are auto-prefixed with "GPU " to avoid ambiguity.
             let label = if let Some(override_label) = label_overrides.get(&id.to_string()) {
                 override_label.clone()
             } else {
-                let label_path = hwmon_dir.join(format!("power{idx}_label"));
-                sysfs::read_string_optional(&label_path).unwrap_or_else(|| id.sensor.clone())
+                let raw = {
+                    let label_path = hwmon_dir.join(format!("power{idx}_label"));
+                    sysfs::read_string_optional(&label_path).unwrap_or_else(|| id.sensor.clone())
+                };
+                if is_gpu_hwmon_chip(chip_name) {
+                    gpu_prefix_label(raw)
+                } else {
+                    raw
+                }
             };
 
             let Some(input_file) = CachedFile::open(&path) else {
@@ -238,5 +272,33 @@ fn discover_power(
                 divisor: 1_000_000.0,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_gpu_hwmon_chip() {
+        assert!(is_gpu_hwmon_chip("amdgpu"));
+        assert!(is_gpu_hwmon_chip("nouveau"));
+        assert!(is_gpu_hwmon_chip("i915"));
+        assert!(is_gpu_hwmon_chip("xe"));
+        assert!(!is_gpu_hwmon_chip("nct6798"));
+        assert!(!is_gpu_hwmon_chip("coretemp"));
+        assert!(!is_gpu_hwmon_chip("k10temp"));
+    }
+
+    #[test]
+    fn test_gpu_prefix_label() {
+        assert_eq!(gpu_prefix_label("PPT".into()), "GPU PPT");
+        assert_eq!(gpu_prefix_label("edge".into()), "GPU edge");
+        assert_eq!(gpu_prefix_label("power1".into()), "GPU power1");
+        // Already prefixed — should not double-prefix
+        assert_eq!(
+            gpu_prefix_label("GPU Temperature".into()),
+            "GPU Temperature"
+        );
     }
 }

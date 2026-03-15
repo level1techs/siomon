@@ -271,6 +271,39 @@ fn build_cpu_panel<'a>(
         ]));
     }
 
+    // RAPL package power (CPU total power draw)
+    let rapl_pkgs: Vec<&(SensorId, SensorReading)> = snapshot
+        .iter()
+        .filter(|(id, _)| {
+            id.source == "cpu" && id.chip == "rapl" && id.sensor.starts_with("package")
+        })
+        .collect();
+    let multi_pkg = rapl_pkgs.len() > 1;
+    for (id, reading) in &rapl_pkgs {
+        let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+        let spark = history
+            .data
+            .get(&key)
+            .map(|buf| sparkline_str(buf, spark_width))
+            .unwrap_or_default();
+        let prec = format_precision(&reading.unit);
+        // On multi-socket systems, include the package index to disambiguate
+        let label = if multi_pkg {
+            format!("Pkg {}: ", id.sensor.trim_start_matches("package-"))
+        } else {
+            "Power: ".into()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(label, Style::default().fg(Color::White)),
+            Span::styled(
+                format!("{:>6.*}{}", prec, reading.current, reading.unit),
+                Style::default().fg(Color::Magenta),
+            ),
+            Span::raw("  "),
+            Span::styled(spark, Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
     Some(Panel {
         title: "CPU",
         lines,
@@ -348,39 +381,58 @@ fn build_thermal_panel<'a>(
 }
 
 // ---------------------------------------------------------------------------
-// Memory / RAPL Panel
+// Memory Panel (RAPL sub-domains + HSMP DDR metrics)
 // ---------------------------------------------------------------------------
 
-fn build_memory_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
-    let rapl: Vec<&(SensorId, SensorReading)> = snapshot
-        .iter()
-        .filter(|(id, _)| id.source == "cpu" && id.chip == "rapl")
-        .collect();
+/// HSMP sensor names that belong in the Memory panel rather than Platform.
+const HSMP_MEMORY_SENSORS: &[&str] = &["ddr_bw_max", "ddr_bw_used", "ddr_bw_util", "mclk"];
 
-    if rapl.is_empty() {
+fn is_hsmp_memory_sensor(id: &SensorId) -> bool {
+    id.source == "hsmp" && HSMP_MEMORY_SENSORS.contains(&id.sensor.as_str())
+}
+
+fn build_memory_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // HSMP DDR bandwidth and memory clock
+    for (_, r) in snapshot.iter().filter(|(id, _)| is_hsmp_memory_sensor(id)) {
+        let prec = format_precision(&r.unit);
+        let unit_str = format!("{}", r.unit);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<20} ", truncate_label(&r.label, 20)),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                format!("{:>7.*}{}", prec, r.current, unit_str),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+    }
+
+    // RAPL sub-domains (core, uncore, dram — package is in the CPU panel)
+    for (_, r) in snapshot.iter().filter(|(id, _)| {
+        id.source == "cpu" && id.chip == "rapl" && !id.sensor.starts_with("package")
+    }) {
+        let prec = format_precision(&r.unit);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<20} ", truncate_label(&r.label, 20)),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                format!("{:>7.*}W", prec, r.current),
+                Style::default().fg(Color::Magenta),
+            ),
+        ]));
+    }
+
+    if lines.is_empty() {
         return None;
     }
 
-    let lines: Vec<Line<'_>> = rapl
-        .iter()
-        .map(|(_, r)| {
-            let prec = format_precision(&r.unit);
-            Line::from(vec![
-                Span::styled("RAPL: ", Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("{:<14}", truncate_label(&r.label, 14)),
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled(
-                    format!("{:>7.*}W", prec, r.current),
-                    Style::default().fg(Color::Magenta),
-                ),
-            ])
-        })
-        .collect();
-
     Some(Panel {
-        title: "Memory / RAPL",
+        title: "Memory",
         lines,
         column: Column::Left,
     })
@@ -501,6 +553,13 @@ fn build_storage_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<
 // Network Panel
 // ---------------------------------------------------------------------------
 
+struct NetIfaceData<'a> {
+    name: &'a str,
+    rx: f64,
+    tx: f64,
+    link_speed_mb: Option<f64>,
+}
+
 fn build_network_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
     let net_sensors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
@@ -511,35 +570,44 @@ fn build_network_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<
         return None;
     }
 
-    // Group by chip (interface name), find rx/tx per interface
-    let mut ifaces: HashMap<&str, (Option<f64>, Option<f64>)> = HashMap::new();
+    // Group by chip (interface name)
+    let mut ifaces: HashMap<&str, NetIfaceData<'_>> = HashMap::new();
     for (id, r) in &net_sensors {
-        let entry = ifaces.entry(id.chip.as_str()).or_insert((None, None));
-        if id.sensor == "rx_mbps" {
-            entry.0 = Some(r.current);
-        } else if id.sensor == "tx_mbps" {
-            entry.1 = Some(r.current);
+        let entry = ifaces.entry(id.chip.as_str()).or_insert(NetIfaceData {
+            name: id.chip.as_str(),
+            rx: 0.0,
+            tx: 0.0,
+            link_speed_mb: None,
+        });
+        match id.sensor.as_str() {
+            "rx_mbps" => entry.rx = r.current,
+            "tx_mbps" => entry.tx = r.current,
+            "link_speed" => entry.link_speed_mb = Some(r.current),
+            _ => {}
         }
     }
 
-    let mut iface_list: Vec<(&str, f64, f64)> = ifaces
-        .into_iter()
-        .map(|(name, (rx, tx))| (name, rx.unwrap_or(0.0), tx.unwrap_or(0.0)))
-        .collect();
-    iface_list.sort_by(|a, b| a.0.cmp(b.0));
+    let mut iface_list: Vec<NetIfaceData<'_>> = ifaces.into_values().collect();
+    iface_list.sort_by(|a, b| a.name.cmp(b.name));
     iface_list.truncate(MAX_PANEL_ENTRIES);
 
+    const BAR_WIDTH: usize = 6;
     let lines: Vec<Line<'_>> = iface_list
-        .into_iter()
-        .map(|(name, rx, tx)| {
-            let iface = truncate_label(name, 10);
+        .iter()
+        .map(|d| {
+            let iface = truncate_label(d.name, 10);
+            let rx_bar = net_bar(d.rx, d.link_speed_mb, BAR_WIDTH);
+            let tx_bar = net_bar(d.tx, d.link_speed_mb, BAR_WIDTH);
             Line::from(vec![
                 Span::styled(format!("{iface:<10}"), Style::default().fg(Color::White)),
-                Span::styled(" \u{2193} ", Style::default().fg(Color::Green)),
-                Span::styled(format!("{rx:>8.1}"), Style::default().fg(Color::Green)),
-                Span::styled("  \u{2191} ", Style::default().fg(Color::Cyan)),
-                Span::styled(format!("{tx:>8.1}"), Style::default().fg(Color::Cyan)),
-                Span::styled(" MB/s", Style::default().fg(Color::DarkGray)),
+                Span::styled(" \u{2193}", Style::default().fg(Color::Green)),
+                Span::styled(format!("{:>7.1}", d.rx), Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(rx_bar, Style::default().fg(Color::Green)),
+                Span::styled(" \u{2191}", Style::default().fg(Color::Cyan)),
+                Span::styled(format!("{:>7.1}", d.tx), Style::default().fg(Color::Cyan)),
+                Span::raw(" "),
+                Span::styled(tx_bar, Style::default().fg(Color::Cyan)),
             ])
         })
         .collect();
@@ -591,9 +659,10 @@ fn build_fans_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Pan
 // ---------------------------------------------------------------------------
 
 fn build_platform_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
+    // DDR bandwidth and memory clock are shown in the Memory panel.
     let hsmp: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
-        .filter(|(id, _)| id.source == "hsmp")
+        .filter(|(id, _)| id.source == "hsmp" && !is_hsmp_memory_sensor(id))
         .collect();
 
     if hsmp.is_empty() {
@@ -674,6 +743,28 @@ fn build_errors_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<P
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Network activity bar. Uses link-speed utilization when available,
+/// falls back to log-scale (0.01–1000+ MiB/s) otherwise.
+/// Both `mibs` and `link_speed_mibs` are in MiB/s (binary megabytes/sec).
+fn net_bar(mibs: f64, link_speed_mibs: Option<f64>, width: usize) -> String {
+    let frac = if let Some(speed) = link_speed_mibs {
+        if speed > 0.0 {
+            (mibs / speed).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    } else if mibs <= 0.001 {
+        0.0
+    } else {
+        // Log scale: 0.01 MiB/s → 0.0, 1000 MiB/s → 1.0
+        ((mibs.log10() + 2.0) / 5.0).clamp(0.0, 1.0)
+    };
+    let filled = (frac * width as f64).ceil() as usize;
+    (0..width)
+        .map(|i| if i < filled { '\u{2588}' } else { '\u{2591}' })
+        .collect()
+}
+
 fn truncate_label(label: &str, max: usize) -> String {
     if label.chars().count() <= max {
         label.to_string()
@@ -683,5 +774,50 @@ fn truncate_label(label: &str, max: usize) -> String {
             .nth(max.saturating_sub(1))
             .map_or(label.len(), |(i, _)| i);
         format!("{}\u{2026}", &label[..end])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_net_bar_zero_traffic() {
+        let bar = net_bar(0.0, None, 6);
+        assert_eq!(bar, "\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}");
+    }
+
+    #[test]
+    fn test_net_bar_full_link_speed() {
+        let bar = net_bar(125.0, Some(125.0), 6);
+        assert_eq!(bar, "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}");
+    }
+
+    #[test]
+    fn test_net_bar_half_link_speed() {
+        let bar = net_bar(62.5, Some(125.0), 6);
+        // 50% → ceil(3.0) = 3 filled
+        assert_eq!(bar, "\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}");
+    }
+
+    #[test]
+    fn test_net_bar_log_scale_high() {
+        // 1000 MB/s → log10(1000)+2 / 5 = 5/5 = 1.0 → all filled
+        let bar = net_bar(1000.0, None, 6);
+        assert_eq!(bar, "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}");
+    }
+
+    #[test]
+    fn test_net_bar_log_scale_low() {
+        // 0.01 MB/s → log10(0.01)+2 / 5 = 0/5 = 0.0 → none filled
+        let bar = net_bar(0.01, None, 6);
+        assert_eq!(bar, "\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}");
+    }
+
+    #[test]
+    fn test_net_bar_exceeds_link_speed() {
+        // Clamped to 1.0
+        let bar = net_bar(200.0, Some(125.0), 6);
+        assert_eq!(bar, "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}");
     }
 }
