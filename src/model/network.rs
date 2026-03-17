@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkAdapter {
@@ -30,6 +31,22 @@ pub enum NetworkInterfaceType {
     Virtual,
     Tun,
     Unknown(u32),
+}
+
+impl fmt::Display for NetworkInterfaceType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NetworkInterfaceType::Ethernet => write!(f, "ethernet"),
+            NetworkInterfaceType::Wifi => write!(f, "wifi"),
+            NetworkInterfaceType::Bridge => write!(f, "bridge"),
+            NetworkInterfaceType::Bond => write!(f, "bond"),
+            NetworkInterfaceType::Vlan => write!(f, "vlan"),
+            NetworkInterfaceType::Loopback => write!(f, "loopback"),
+            NetworkInterfaceType::Virtual => write!(f, "virtual"),
+            NetworkInterfaceType::Tun => write!(f, "tunnel"),
+            NetworkInterfaceType::Unknown(code) => write!(f, "if-type:{code}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

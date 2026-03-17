@@ -70,3 +70,46 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --no-default-features
+
+  windows-check:
+    name: Check (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+      - run: cargo check --target x86_64-pc-windows-msvc
+
+  windows-build:
+    name: Build Release (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+      - run: cargo build --release --target x86_64-pc-windows-msvc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sio-windows-x86_64
+          path: target/x86_64-pc-windows-msvc/release/sio.exe
+
+  windows-test:
+    name: Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+      - run: cargo test --target x86_64-pc-windows-msvc

@@ -1,6 +1,6 @@
 # siomon
 
-A comprehensive Linux hardware information and real-time sensor monitoring tool. Single static binary, no runtime dependencies.
+A comprehensive hardware information and real-time sensor monitoring tool for Linux and Windows. Single static binary, no runtime dependencies.
 
 ## Features
 
@@ -119,16 +119,20 @@ sudo sio
 ### Prerequisites
 
 - Rust 1.85+ (edition 2024)
-- Linux (kernel 4.x+ for full sysfs support; 5.x+ recommended)
-- Standard build tools (`gcc` or `cc` for libc linking)
+- **Linux:** kernel 4.x+ for full sysfs support; 5.x+ recommended. Standard build tools (`gcc` or `cc`)
+- **Windows:** Visual Studio Build Tools (MSVC) or `rustup` with `x86_64-pc-windows-msvc` target
 
 ### Build
 
 ```bash
+# Linux
 cargo build --release
+
+# Windows
+cargo build --release --target x86_64-pc-windows-msvc
 ```
 
-The binary is at `./target/release/sio` (~5.3 MB with all features, statically linked PCI ID database).
+The binary is at `./target/release/sio` (Linux) or `./target/x86_64-pc-windows-msvc/release/sio.exe` (Windows).
 
 ### Feature Flags
 
@@ -304,9 +308,84 @@ src/
 
 ## Install
 
+### Linux
+
 ```bash
 cargo install siomon
 ```
+
+### Windows
+
+```powershell
+# Via winget (when available)
+winget install arndawg.sio
+
+# Or download from GitHub Releases
+# https://github.com/arndawg/siomon-win/releases
+
+# Or build from source
+cargo build --release --target x86_64-pc-windows-msvc
+```
+
+## Windows Port
+
+The Windows port (`arndawg/siomon-win`) provides feature parity with the Linux
+version using native Windows APIs. No Linux subsystem or emulation layer required.
+
+### What works
+
+- **154 real-time sensors** without any driver: CPU frequency + utilization (per-core),
+  GPU temp/fan/clocks/power (NVIDIA NVML), disk and network throughput, WHEA error counts
+- **Full hardware info**: CPU (CPUID + topology + microcode), memory (SMBIOS DIMMs),
+  motherboard (BIOS, Secure Boot, chipset), GPU (NVML + display outputs), storage
+  (NVMe/SATA SMART), network (MAC, IPs, speed, driver), PCI (87+ devices with pci_ids),
+  USB (speed classification), audio (HD Audio codec), battery (laptops)
+- **All output formats**: text, JSON, TUI dashboard (`sio -m`), CSV sensor logging
+- **Admin detection** via Windows `TokenElevation` API — SMART data requires elevation
+
+### Testing
+
+Automated smoke test (`tests/cli_smoke_test.sh`): **36/36 tests passed** on
+AMD Threadripper PRO 3975WX / ASUS WRX80E / NVIDIA GTX 1650 / Windows 10 Pro.
+
+| Area | Tests | Result |
+|------|-------|--------|
+| 12 subcommands (text + JSON) | 24 | All passed |
+| JSON field validation | 10 | All non-null |
+| Sensor snapshot | 1 | 154 sensors |
+| Error handling + flags | 7 | All correct |
+
+Full results: `cli_testing_results.md`. Test plan: `cli_testing_plan.md`.
+
+### Recent fixes
+
+- **NVMe SMART** — fixed struct size mismatch (44 vs 40 bytes) that caused
+  `ERROR_INVALID_FUNCTION` on Samsung 980 PRO; added adapter-level query fallback
+- **SMART matching** — fallback heuristic for spanned/RAID volumes (component drives
+  now attach SMART to the larger logical volume)
+- **Admin detection** — replaced unreliable `CreateFileW` probe with `TokenElevation`
+  API; TUI no longer shows false admin warning in elevated prompts
+- **`is_elevated()`** — unified cross-platform function in `platform/mod.rs`
+  (Windows: `TokenElevation`, Unix: `geteuid`); gates SMART probing and WinRing0 ops
+
+### Known differences from Linux
+
+| Feature | Linux | Windows |
+|---------|-------|---------|
+| hwmon sensors (temps/fans/voltages) | `/sys/class/hwmon` | Requires WinRing0 driver (optional) |
+| RAPL CPU power | `/sys/class/powercap` | Requires WinRing0 MSR access (optional) |
+| PCIe link speed/width | sysfs | Requires WinRing0 PCI config (optional) |
+| AMD GPU sensors | sysfs hwmon | AMD ADL library (ships with driver) |
+| PCI enumeration | sysfs (fast) | WMI PowerShell (~1.5s overhead) |
+| NVMe SMART | ioctl on `/dev/nvmeN` | `IOCTL_STORAGE_QUERY_PROPERTY` (some drives unsupported) |
+| `sio -f xml` / `sio -f html` | Available | Requires `--features xml` / `--features html` at compile time |
+| Super I/O chip detection | `/dev/port` (root) | WinRing0 port I/O (admin + driver) |
+| IPMI BMC sensors | `/dev/ipmiN` (ipmi-rs) | `ipmitool` CLI backend |
+| Config file path | `~/.config/siomon/` | Same (or `%APPDATA%` — future) |
+
+Without WinRing0, sio runs with **154 active sensors**. With WinRing0 installed,
+**210+ sensors** become available (SuperIO temps/fans/voltages, RAPL power, PCIe
+link info, AMD HSMP telemetry, SMBus VRM + DDR5 DIMM temperatures).
 
 ## License
 

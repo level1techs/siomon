@@ -1,0 +1,70 @@
+{
+  "project": "arndawg/siomon-win",
+  "branch": "windows-port",
+  "upstream": "level1techs/siomon",
+  "release": "v0.1.3-win.3",
+  "release_url": "https://github.com/arndawg/siomon-win/releases/tag/v0.1.3-win.3",
+  "winget_pr": "https://github.com/microsoft/winget-pkgs/pull/349178",
+  "upstream_pr": "https://github.com/level1techs/siomon/pull/14",
+  "phases": {
+    "ALPHA": {
+      "title": "Windows Port Foundation",
+      "status": "completed",
+      "plan": "archive/PHASE_ALPHA.md",
+      "exit_report": "archive/PHASE_ALPHA_EXIT_REPORT.md"
+    },
+    "BETA": {
+      "title": "User-Mode Parity (no driver required)",
+      "status": "completed",
+      "plan": "archive/PHASE_BETA.md",
+      "exit_report": "archive/PHASE_BETA_EXIT_REPORT.md"
+    },
+    "GAMMA": {
+      "title": "Driver-Gated Hardware Sensors",
+      "status": "completed",
+      "plan": "archive/PHASE_GAMMA.md",
+      "exit_report": "archive/PHASE_GAMMA_EXIT_REPORT.md"
+    },
+    "DELTA": {
+      "title": "Polish and Upstream Preparation",
+      "status": "completed",
+      "plan": "archive/PHASE_DELTA.md",
+      "exit_report": "archive/PHASE_DELTA_EXIT_REPORT.md"
+    },
+    "EPSILON": {
+      "title": "CI, Release, and winget Distribution",
+      "status": "completed",
+      "plan": "archive/PHASE_EPSILON.md",
+      "exit_report": "archive/PHASE_EPSILON_EXIT_REPORT.md"
+    },
+    "ZETA": {
+      "title": "Distribution and Upstream Merge",
+      "status": "completed",
+      "started": "2026-03-16",
+      "completed": "2026-03-16",
+      "plan": "PHASE_ZETA.md",
+      "exit_report": "PHASE_ZETA_EXIT_REPORT.md",
+      "summary": "winget PR submitted (#349178), upstream PR submitted (#14), automated winget workflow added",
+      "work_items": {
+        "Z1": { "title": "Verify fork main branch", "status": "completed" },
+        "Z2": { "title": "Submit winget PR", "status": "completed", "pr": "https://github.com/microsoft/winget-pkgs/pull/349178" },
+        "Z3": { "title": "Upstream PR to level1techs/siomon", "status": "completed", "pr": "https://github.com/level1techs/siomon/pull/14" },
+        "Z6": { "title": "Automated winget version bump workflow", "status": "completed" }
+      }
+    },
+    "ETA": {
+      "title": "Platform Expansion and Hardware Validation",
+      "status": "future",
+      "plan": null,
+      "exit_report": null,
+      "summary": "ARM64 Windows port, WinRing0 live hardware validation, macOS investigation, respond to PR feedback",
+      "work_items": {
+        "H1": { "title": "ARM64 Windows (aarch64-pc-windows-msvc)", "effort": "high", "status": "pending" },
+        "H2": { "title": "WinRing0 live hardware validation", "effort": "high", "status": "pending" },
+        "H3": { "title": "macOS port investigation", "effort": "high", "status": "pending" },
+        "H4": { "title": "Respond to winget PR feedback", "effort": "low", "status": "pending" },
+        "H5": { "title": "Respond to upstream PR feedback", "effort": "medium", "status": "pending" }
+      }
+    }
+  }
+}

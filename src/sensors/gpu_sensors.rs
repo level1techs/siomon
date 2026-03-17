@@ -1,9 +1,12 @@
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+#[cfg(unix)]
 use crate::platform::sysfs;
+#[cfg(unix)]
 use std::path::PathBuf;
 
 pub struct GpuSensorSource {
     nvidia: NvidiaState,
+    #[cfg(unix)]
     amd_gpus: Vec<AmdGpu>,
     /// Consecutive poll cycles where NVIDIA produced zero readings.
     #[cfg(feature = "nvidia")]
@@ -24,6 +27,7 @@ struct NvidiaGpu {
     name: String,
 }
 
+#[cfg(unix)]
 struct AmdGpu {
     index: u32,
     name: String,
@@ -45,10 +49,12 @@ impl GpuSensorSource {
         } else {
             discover_nvidia()
         };
+        #[cfg(unix)]
         let amd_gpus = discover_amd();
 
         Self {
             nvidia,
+            #[cfg(unix)]
             amd_gpus,
             #[cfg(feature = "nvidia")]
             nvidia_fail_count: 0,
@@ -78,6 +84,7 @@ impl GpuSensorSource {
             }
         }
 
+        #[cfg(unix)]
         poll_amd(&self.amd_gpus, &mut readings);
 
         readings
@@ -115,6 +122,7 @@ fn discover_nvidia() -> NvidiaState {
     }
 }
 
+#[cfg(unix)]
 fn discover_amd() -> Vec<AmdGpu> {
     let mut gpus = Vec::new();
     let mut idx = 0u32;
@@ -271,6 +279,7 @@ fn poll_nvidia(
     }
 }
 
+#[cfg(unix)]
 fn poll_amd(gpus: &[AmdGpu], readings: &mut Vec<(SensorId, SensorReading)>) {
     for gpu in gpus {
         let chip = format!("amdgpu{}", gpu.index);

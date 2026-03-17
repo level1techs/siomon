@@ -1,13 +1,19 @@
+#[cfg(unix)]
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+#[cfg(unix)]
 use crate::platform::sysfs::{self, CachedFile};
+#[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use std::time::Instant;
 
+#[cfg(unix)]
 pub struct NetworkStatsSource {
     interfaces: Vec<NetInterface>,
     prev_time: Instant,
 }
 
+#[cfg(unix)]
 struct NetInterface {
     name: String,
     rx_file: CachedFile,
@@ -18,6 +24,7 @@ struct NetInterface {
     speed_file: Option<CachedFile>,
 }
 
+#[cfg(unix)]
 impl NetworkStatsSource {
     pub fn discover() -> Self {
         let mut interfaces = Vec::new();
@@ -155,6 +162,7 @@ impl NetworkStatsSource {
     }
 }
 
+#[cfg(unix)]
 impl crate::sensors::SensorSource for NetworkStatsSource {
     fn name(&self) -> &str {
         "network"
@@ -165,6 +173,7 @@ impl crate::sensors::SensorSource for NetworkStatsSource {
     }
 }
 
+#[cfg(unix)]
 fn is_physical_interface(dir: &Path, iface: &str) -> bool {
     // Skip loopback
     if iface == "lo" {
@@ -174,4 +183,89 @@ fn is_physical_interface(dir: &Path, iface: &str) -> bool {
     // Virtual interfaces don't have a "device" symlink in sysfs
     // Physical NICs (PCI, USB) have /sys/class/net/{iface}/device -> ../../...
     dir.join("device").exists()
+}
+
+// ---------------------------------------------------------------------------
+// Windows implementation
+// ---------------------------------------------------------------------------
+
+#[cfg(not(unix))]
+pub struct NetworkStatsSource {
+    networks: sysinfo::Networks,
+    prev: std::collections::HashMap<String, (u64, u64)>,
+    last_time: std::time::Instant,
+}
+
+#[cfg(not(unix))]
+impl NetworkStatsSource {
+    pub fn discover() -> Self {
+        use sysinfo::Networks;
+        let networks = Networks::new_with_refreshed_list();
+        let prev = networks
+            .iter()
+            .map(|(n, d)| (n.clone(), (d.total_received(), d.total_transmitted())))
+            .collect();
+        Self {
+            networks,
+            prev,
+            last_time: std::time::Instant::now(),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+impl crate::sensors::SensorSource for NetworkStatsSource {
+    fn name(&self) -> &str {
+        "network"
+    }
+
+    fn poll(
+        &mut self,
+    ) -> Vec<(
+        crate::model::sensor::SensorId,
+        crate::model::sensor::SensorReading,
+    )> {
+        use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+        self.networks.refresh(false);
+        let elapsed = self.last_time.elapsed().as_secs_f64().max(0.001);
+        self.last_time = std::time::Instant::now();
+        let mut results = Vec::new();
+
+        for (name, data) in self.networks.iter() {
+            let rx = data.total_received();
+            let tx = data.total_transmitted();
+            let (prev_rx, prev_tx) = self.prev.get(name).copied().unwrap_or((rx, tx));
+            let rx_rate = (rx.saturating_sub(prev_rx)) as f64 / elapsed / 1_048_576.0;
+            let tx_rate = (tx.saturating_sub(prev_tx)) as f64 / elapsed / 1_048_576.0;
+            self.prev.insert(name.clone(), (rx, tx));
+
+            results.push((
+                SensorId {
+                    source: "net".to_string(),
+                    chip: name.clone(),
+                    sensor: "rx_mbps".to_string(),
+                },
+                SensorReading::new(
+                    format!("{name} RX"),
+                    rx_rate,
+                    SensorUnit::MegabytesPerSec,
+                    SensorCategory::Throughput,
+                ),
+            ));
+            results.push((
+                SensorId {
+                    source: "net".to_string(),
+                    chip: name.clone(),
+                    sensor: "tx_mbps".to_string(),
+                },
+                SensorReading::new(
+                    format!("{name} TX"),
+                    tx_rate,
+                    SensorUnit::MegabytesPerSec,
+                    SensorCategory::Throughput,
+                ),
+            ));
+        }
+        results
+    }
 }

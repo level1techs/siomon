@@ -1,20 +1,28 @@
+#[cfg(unix)]
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+#[cfg(unix)]
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use std::time::Instant;
 
+#[cfg(unix)]
 pub struct DiskActivitySource {
     prev_stats: HashMap<String, DiskStat>,
     prev_time: Instant,
 }
 
+#[cfg(unix)]
 #[derive(Clone)]
 struct DiskStat {
     read_sectors: u64,
     write_sectors: u64,
 }
 
+#[cfg(unix)]
 impl DiskActivitySource {
     pub fn discover() -> Self {
         let prev_stats = parse_diskstats();
@@ -87,6 +95,7 @@ impl DiskActivitySource {
     }
 }
 
+#[cfg(unix)]
 impl crate::sensors::SensorSource for DiskActivitySource {
     fn name(&self) -> &str {
         "disk"
@@ -97,6 +106,7 @@ impl crate::sensors::SensorSource for DiskActivitySource {
     }
 }
 
+#[cfg(unix)]
 fn parse_diskstats() -> HashMap<String, DiskStat> {
     let mut stats = HashMap::new();
     let Ok(content) = fs::read_to_string("/proc/diskstats") else {
@@ -139,6 +149,7 @@ fn parse_diskstats() -> HashMap<String, DiskStat> {
     stats
 }
 
+#[cfg(unix)]
 fn is_real_block_device(name: &str) -> bool {
     // Skip loop, ram, and dm- devices
     if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("dm-") {
@@ -180,4 +191,99 @@ fn is_real_block_device(name: &str) -> bool {
 
     // Verify device exists in /sys/block/
     Path::new(&format!("/sys/block/{name}")).exists()
+}
+
+// ---------------------------------------------------------------------------
+// Windows implementation
+// ---------------------------------------------------------------------------
+
+#[cfg(not(unix))]
+pub struct DiskActivitySource {
+    disks: sysinfo::Disks,
+    prev: std::collections::HashMap<String, (u64, u64)>,
+    last_time: std::time::Instant,
+}
+
+#[cfg(not(unix))]
+impl DiskActivitySource {
+    pub fn discover() -> Self {
+        use sysinfo::Disks;
+        let disks = Disks::new_with_refreshed_list();
+        // Initialize prev from current usage snapshot (will be 0 on first poll which is fine)
+        let prev = disks
+            .list()
+            .iter()
+            .map(|d| {
+                let name = d.name().to_string_lossy().to_string();
+                let usage = d.usage();
+                (name, (usage.total_read_bytes, usage.total_written_bytes))
+            })
+            .collect();
+        Self {
+            disks,
+            prev,
+            last_time: std::time::Instant::now(),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+impl crate::sensors::SensorSource for DiskActivitySource {
+    fn name(&self) -> &str {
+        "disk"
+    }
+
+    fn poll(
+        &mut self,
+    ) -> Vec<(
+        crate::model::sensor::SensorId,
+        crate::model::sensor::SensorReading,
+    )> {
+        use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+        self.disks.refresh(false);
+        let elapsed = self.last_time.elapsed().as_secs_f64().max(0.001);
+        self.last_time = std::time::Instant::now();
+        let mut results = Vec::new();
+
+        for disk in self.disks.list() {
+            let name = disk.name().to_string_lossy().to_string();
+            let usage = disk.usage();
+            let read = usage.total_read_bytes;
+            let written = usage.total_written_bytes;
+            let (prev_read, prev_written) =
+                self.prev.get(&name).copied().unwrap_or((read, written));
+
+            let read_rate = (read.saturating_sub(prev_read)) as f64 / elapsed / 1_048_576.0;
+            let write_rate = (written.saturating_sub(prev_written)) as f64 / elapsed / 1_048_576.0;
+            self.prev.insert(name.clone(), (read, written));
+
+            results.push((
+                SensorId {
+                    source: "disk".to_string(),
+                    chip: name.clone(),
+                    sensor: "read_mbps".to_string(),
+                },
+                SensorReading::new(
+                    format!("{name} Read"),
+                    read_rate,
+                    SensorUnit::MegabytesPerSec,
+                    SensorCategory::Throughput,
+                ),
+            ));
+            results.push((
+                SensorId {
+                    source: "disk".to_string(),
+                    chip: name.clone(),
+                    sensor: "write_mbps".to_string(),
+                },
+                SensorReading::new(
+                    format!("{name} Write"),
+                    write_rate,
+                    SensorUnit::MegabytesPerSec,
+                    SensorCategory::Throughput,
+                ),
+            ));
+        }
+        results
+    }
 }

@@ -1,0 +1,17 @@
+name: Update winget manifest
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  winget:
+    name: Update winget package
+    if: "!github.event.release.prerelease"
+    runs-on: windows-latest
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: arndawg.sio
+          installers-regex: 'sio-windows-x86_64-.*\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}

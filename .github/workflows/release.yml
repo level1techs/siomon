@@ -13,7 +13,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  build-linux:
     name: Build (${{ matrix.target }})
     runs-on: ubuntu-latest
     strategy:
@@ -47,6 +47,35 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.tar.gz
 
+  build-windows:
+    name: Build (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          $zipName = "sio-windows-x86_64-$version.zip"
+          Compress-Archive -Path "target/x86_64-pc-windows-msvc/release/sio.exe" -DestinationPath $zipName
+          $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash
+          "$hash  $zipName" | Out-File -Encoding UTF8 "$zipName.sha256"
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sio-windows-x86_64
+          path: |
+            sio-windows-x86_64-*.zip
+            sio-windows-x86_64-*.zip.sha256
+
   publish-crate:
     name: Publish to crates.io
     runs-on: ubuntu-latest
@@ -66,7 +95,7 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: [build]
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,4 +106,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/**/*.sha256

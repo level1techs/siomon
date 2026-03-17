@@ -123,7 +123,10 @@ impl NvmlLibrary {
     /// or if `nvmlInit_v2` fails.
     pub fn try_load() -> Option<Self> {
         // SAFETY: We are loading a well-known system library path.
+        #[cfg(unix)]
         let lib = unsafe { libloading::Library::new("libnvidia-ml.so.1") }.ok()?;
+        #[cfg(windows)]
+        let lib = unsafe { libloading::Library::new("nvml.dll") }.ok()?;
 
         // Resolve all symbols. If any mandatory symbol is missing we bail out.
         unsafe {

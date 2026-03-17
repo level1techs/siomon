@@ -1,7 +1,16 @@
-use crate::model::storage::{NvmeDetails, SmartData, StorageDevice, StorageInterface};
-use crate::platform::{nvme_ioctl, sata_ioctl, sysfs};
+#[cfg(unix)]
+use crate::model::storage::{NvmeDetails, SmartData};
+use crate::model::storage::{StorageDevice, StorageInterface};
+#[cfg(unix)]
+use crate::platform::sysfs;
+#[cfg(unix)]
+use crate::platform::{nvme_ioctl, sata_ioctl};
+#[cfg(windows)]
+use crate::platform::{nvme_win, sata_win};
+#[cfg(unix)]
 use std::path::Path;
 
+#[cfg(unix)]
 pub fn collect() -> Vec<StorageDevice> {
     let mut devices = Vec::new();
 
@@ -35,6 +44,294 @@ pub fn collect() -> Vec<StorageDevice> {
     devices
 }
 
+#[cfg(not(unix))]
+pub fn collect() -> Vec<StorageDevice> {
+    use sysinfo::{DiskKind, Disks};
+    let disks = Disks::new_with_refreshed_list();
+    let mut devices: Vec<StorageDevice> = disks
+        .list()
+        .iter()
+        .map(|disk| {
+            // Use drive letter only (e.g. "C:") so display shows "C: ..."
+            let mount = disk
+                .mount_point()
+                .to_string_lossy()
+                .trim_end_matches(['\\', '/'])
+                .to_string();
+            // Volume label (e.g. "OS", "Data") as model; fall back to filesystem type
+            let vol_name = disk.name().to_string_lossy().to_string();
+            let fs = disk.file_system().to_string_lossy().to_string();
+            let model = if vol_name.is_empty() { fs } else { vol_name };
+            let rotational = matches!(disk.kind(), DiskKind::HDD);
+            let interface = match disk.kind() {
+                DiskKind::SSD => StorageInterface::NVMe,
+                DiskKind::HDD => StorageInterface::SATA,
+                _ => StorageInterface::Unknown("unknown".to_string()),
+            };
+            StorageDevice {
+                device_name: mount,
+                sysfs_path: String::new(),
+                model: Some(model),
+                serial_number: None,
+                firmware_version: None,
+                capacity_bytes: disk.total_space(),
+                interface,
+                rotational,
+                logical_sector_size: 512,
+                physical_sector_size: 512,
+                nvme: None,
+                smart: None,
+            }
+        })
+        .collect();
+
+    // Try to read SMART data from physical drives and attach to matching
+    // logical drives.  Requires admin — skip entirely when not elevated to
+    // avoid 16 wasted ACCESS_DENIED failures from CreateFile.
+    #[cfg(windows)]
+    if crate::platform::is_elevated() {
+        attach_smart_data(&mut devices);
+    } else {
+        log::debug!("Storage: skipping SMART probe (not elevated)");
+    }
+
+    devices
+}
+
+/// Probe `\\.\PhysicalDrive0..15` for SMART data and attach to devices that
+/// don't already have it.  We match physical drives to logical sysinfo entries
+/// by capacity (best-effort heuristic).
+#[cfg(windows)]
+fn attach_smart_data(devices: &mut [StorageDevice]) {
+    use std::mem;
+    use std::ptr;
+    use winapi::shared::minwindef::{DWORD, FALSE};
+    use winapi::um::fileapi::CreateFileW;
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::ioapiset::DeviceIoControl;
+    use winapi::um::winioctl::IOCTL_DISK_GET_DRIVE_GEOMETRY_EX;
+    use winapi::um::winnt::{FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ};
+
+    /// Minimal `DISK_GEOMETRY_EX` — we only need the total `DiskSize`.
+    #[repr(C)]
+    struct DiskGeometryEx {
+        geometry: DiskGeometry,
+        disk_size: i64,
+        // Data[1] follows but we don't need it.
+    }
+
+    #[repr(C)]
+    struct DiskGeometry {
+        cylinders: i64,
+        media_type: u32,
+        tracks_per_cylinder: DWORD,
+        sectors_per_track: DWORD,
+        bytes_per_sector: DWORD,
+    }
+
+    /// Encode a Rust `&str` as null-terminated UTF-16.
+    fn to_wide(s: &str) -> Vec<u16> {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let mut consecutive_missing = 0u32;
+    for drive_num in 0u32..16 {
+        // Stop probing after 2 consecutive "drive not found" results
+        let path = format!("\\\\.\\PhysicalDrive{}", drive_num);
+        let wide = to_wide(&path);
+        let exists = unsafe {
+            let h = winapi::um::fileapi::CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null_mut(),
+                winapi::um::fileapi::OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            );
+            if h == INVALID_HANDLE_VALUE {
+                false
+            } else {
+                CloseHandle(h);
+                true
+            }
+        };
+        if !exists {
+            consecutive_missing += 1;
+            if consecutive_missing >= 2 {
+                break;
+            }
+            continue;
+        }
+        consecutive_missing = 0;
+
+        // Try NVMe SMART first
+        if let Some(smart_log) = nvme_win::read_nvme_smart(drive_num) {
+            let smart = nvme_win::nvme_smart_to_smart_data(&smart_log);
+            log::debug!(
+                "Storage: PhysicalDrive{} NVMe SMART OK (temp={}C, hours={:?})",
+                drive_num,
+                smart.temperature_celsius,
+                smart.power_on_hours
+            );
+            if let Some(dev) = match_physical_to_logical(
+                devices,
+                drive_num,
+                to_wide,
+                IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+            ) {
+                log::debug!("Storage: attached NVMe SMART to {}", dev.device_name);
+                dev.smart = Some(smart);
+                if dev.interface == StorageInterface::Unknown("unknown".to_string()) {
+                    dev.interface = StorageInterface::NVMe;
+                }
+            } else {
+                log::debug!(
+                    "Storage: PhysicalDrive{} NVMe SMART read OK but no matching logical drive",
+                    drive_num
+                );
+            }
+            continue;
+        }
+
+        // Try SATA SMART
+        if let Some(ata) = sata_win::read_sata_smart(drive_num) {
+            let smart = sata_win::sata_smart_to_smart_data(&ata);
+            log::debug!(
+                "Storage: PhysicalDrive{} SATA SMART OK (temp={}C, hours={:?})",
+                drive_num,
+                smart.temperature_celsius,
+                smart.power_on_hours
+            );
+            if let Some(dev) = match_physical_to_logical(
+                devices,
+                drive_num,
+                to_wide,
+                IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+            ) {
+                log::debug!("Storage: attached SATA SMART to {}", dev.device_name);
+                dev.smart = Some(smart);
+                if dev.interface == StorageInterface::Unknown("unknown".to_string()) {
+                    dev.interface = StorageInterface::SATA;
+                }
+            } else {
+                log::debug!(
+                    "Storage: PhysicalDrive{} SATA SMART read OK but no matching logical drive",
+                    drive_num
+                );
+            }
+        }
+    }
+
+    /// Find the logical device (from sysinfo) that best matches a physical
+    /// drive by capacity.  Returns `None` if no unmatched device is close
+    /// enough in size (<10 % difference).
+    fn match_physical_to_logical(
+        devices: &mut [StorageDevice],
+        drive_num: u32,
+        to_wide: fn(&str) -> Vec<u16>,
+        ioctl_geom: DWORD,
+    ) -> Option<&mut StorageDevice> {
+        // Read the physical drive capacity via IOCTL_DISK_GET_DRIVE_GEOMETRY_EX.
+        let phys_capacity = get_physical_drive_size(drive_num, to_wide, ioctl_geom)?;
+        log::debug!(
+            "Storage: PhysicalDrive{} raw capacity = {} bytes",
+            drive_num,
+            phys_capacity
+        );
+
+        // Find the device whose capacity is closest (and within 20%) that
+        // doesn't already have SMART data.
+        let mut best_idx: Option<usize> = None;
+        let mut best_diff: u64 = u64::MAX;
+        for (i, dev) in devices.iter().enumerate() {
+            if dev.smart.is_some() {
+                continue;
+            }
+            let cap = dev.capacity_bytes;
+            let diff = phys_capacity.abs_diff(cap);
+            let threshold = phys_capacity / 5; // ~20 %
+            if diff < threshold && diff < best_diff {
+                best_diff = diff;
+                best_idx = Some(i);
+            }
+        }
+
+        if best_idx.is_some() {
+            return best_idx.map(|i| &mut devices[i]);
+        }
+
+        // Fallback: for spanned/RAID volumes the logical size exceeds any
+        // single physical drive.  Attach SMART to the first device whose
+        // logical capacity is LARGER than the physical drive (component of
+        // a larger volume) and that doesn't already have SMART data.
+        for (i, dev) in devices.iter().enumerate() {
+            if dev.smart.is_some() {
+                continue;
+            }
+            if dev.capacity_bytes > phys_capacity {
+                log::debug!(
+                    "Storage: fallback match — PhysicalDrive{} ({}B) is likely a component of {} ({}B)",
+                    drive_num,
+                    phys_capacity,
+                    dev.device_name,
+                    dev.capacity_bytes
+                );
+                return Some(&mut devices[i]);
+            }
+        }
+
+        None
+    }
+
+    /// Query the raw size (in bytes) of `\\.\PhysicalDriveN` via
+    /// `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`.
+    fn get_physical_drive_size(
+        drive_num: u32,
+        to_wide: fn(&str) -> Vec<u16>,
+        ioctl_geom: DWORD,
+    ) -> Option<u64> {
+        let path = format!("\\\\.\\PhysicalDrive{}", drive_num);
+        let wide = to_wide(&path);
+        unsafe {
+            let handle = CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null_mut(),
+                winapi::um::fileapi::OPEN_EXISTING,
+                0,
+                ptr::null_mut(),
+            );
+            if handle == INVALID_HANDLE_VALUE {
+                return None;
+            }
+            let mut geom: DiskGeometryEx = mem::zeroed();
+            let mut returned: DWORD = 0;
+            let ok = DeviceIoControl(
+                handle,
+                ioctl_geom,
+                ptr::null_mut(),
+                0,
+                &mut geom as *mut DiskGeometryEx as *mut _,
+                mem::size_of::<DiskGeometryEx>() as DWORD,
+                &mut returned,
+                ptr::null_mut(),
+            );
+            CloseHandle(handle);
+            if ok == FALSE {
+                return None;
+            }
+            Some(geom.disk_size as u64)
+        }
+    }
+}
+
 pub struct StorageCollector;
 
 impl crate::collectors::Collector for StorageCollector {
@@ -47,10 +344,12 @@ impl crate::collectors::Collector for StorageCollector {
     }
 }
 
+#[cfg(unix)]
 fn is_partition(block_path: &Path) -> bool {
     block_path.join("partition").exists()
 }
 
+#[cfg(unix)]
 fn collect_device(name: &str, block_path: &Path) -> Option<StorageDevice> {
     let size_sectors = sysfs::read_u64_optional(&block_path.join("size")).unwrap_or(0);
     if size_sectors == 0 {
@@ -91,6 +390,7 @@ fn collect_device(name: &str, block_path: &Path) -> Option<StorageDevice> {
     })
 }
 
+#[cfg(unix)]
 fn collect_nvme(
     name: &str,
     block_path: &Path,
@@ -148,6 +448,7 @@ fn collect_nvme(
     )
 }
 
+#[cfg(unix)]
 fn collect_ata_scsi(
     name: &str,
     block_path: &Path,
@@ -168,13 +469,12 @@ fn collect_ata_scsi(
     let interface = detect_interface(block_path);
 
     // Try reading SATA SMART data via SG_IO ioctl
-    let smart_path = format!("/dev/{}", name);
-    let smart = sata_ioctl::read_sata_smart(Path::new(&smart_path))
-        .map(|ata| sata_ioctl::sata_smart_to_smart_data(&ata));
+    let smart = read_sata_smart_data(name);
 
     (interface, model, serial, firmware, smart)
 }
 
+#[cfg(unix)]
 fn read_nvme_smart_data(ctrl_name: &str) -> Option<SmartData> {
     let dev_path = format!("/dev/{}", ctrl_name);
     let log = nvme_ioctl::read_nvme_smart(Path::new(&dev_path))?;
@@ -205,6 +505,14 @@ fn read_nvme_smart_data(ctrl_name: &str) -> Option<SmartData> {
     })
 }
 
+#[cfg(unix)]
+fn read_sata_smart_data(name: &str) -> Option<SmartData> {
+    let smart_path = format!("/dev/{}", name);
+    sata_ioctl::read_sata_smart(Path::new(&smart_path))
+        .map(|ata| sata_ioctl::sata_smart_to_smart_data(&ata))
+}
+
+#[cfg(unix)]
 fn detect_interface(block_path: &Path) -> StorageInterface {
     let dev_path = block_path.join("device");
 

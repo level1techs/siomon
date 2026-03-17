@@ -4,10 +4,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::model::sensor::{SensorId, SensorReading};
-use crate::sensors::{
-    SensorSource, cpu_freq, cpu_util, disk_activity, gpu_sensors, hwmon, network_stats, rapl,
-    superio,
-};
+use crate::sensors::SensorSource;
+use crate::sensors::superio;
+use crate::sensors::{cpu_freq, cpu_util, disk_activity, gpu_sensors, network_stats};
+#[cfg(unix)]
+use crate::sensors::{hwmon, rapl};
 
 pub type SensorState = Arc<RwLock<HashMap<SensorId, SensorReading>>>;
 
@@ -152,6 +153,7 @@ impl Drop for PollerHandle {
 ///
 /// Encapsulates per-source construction and logging. Called by both the
 /// continuous poller and the one-shot snapshot.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn join_or_log<T>(result: std::thread::Result<T>, name: &str) -> Option<T> {
     match result {
         Ok(v) => Some(v),
@@ -167,6 +169,7 @@ fn join_or_log<T>(result: std::thread::Result<T>, name: &str) -> Option<T> {
     }
 }
 
+#[cfg(unix)]
 fn discover_all_sources(
     no_nvidia: bool,
     direct_io: bool,
@@ -286,6 +289,77 @@ fn discover_all_sources(
         sources.len(),
         t.elapsed().as_millis()
     );
+    sources
+}
+
+#[cfg(not(unix))]
+fn discover_all_sources(
+    no_nvidia: bool,
+    direct_io: bool,
+    label_overrides: &HashMap<String, String>,
+) -> Vec<Box<dyn SensorSource>> {
+    let mut sources: Vec<Box<dyn SensorSource>> = vec![
+        Box::new(cpu_freq::CpuFreqSource::discover()),
+        Box::new(cpu_util::CpuUtilSource::discover()),
+        Box::new(network_stats::NetworkStatsSource::discover()),
+        Box::new(disk_activity::DiskActivitySource::discover()),
+        Box::new(gpu_sensors::GpuSensorSource::discover(no_nvidia)),
+    ];
+    #[cfg(feature = "nvidia")]
+    sources.push(Box::new(
+        super::gpu_sensors_adl::AdlGpuSensorSource::discover(),
+    ));
+    sources.push(Box::new(super::whea::WheaSource::discover()));
+    sources.push(Box::new(
+        super::acpi_thermal_win::AcpiThermalSource::discover(),
+    ));
+    sources.push(Box::new(super::rapl_win::RaplWinSource::discover()));
+    let ipmi_src = super::ipmi_win::IpmiWinSource::discover();
+    log::info!(
+        "IPMI: {}",
+        if ipmi_src.is_available() { "yes" } else { "no" }
+    );
+    sources.push(Box::new(ipmi_src));
+    let hsmp_src = super::hsmp_win::HsmpWinSource::discover();
+    log::info!(
+        "HSMP: {}",
+        if hsmp_src.is_available() { "yes" } else { "no" }
+    );
+    sources.push(Box::new(hsmp_src));
+
+    // Super I/O and SMBus direct register access via WinRing0 (requires admin)
+    if direct_io
+        && crate::platform::is_elevated()
+        && crate::platform::port_io_win::PortIo::is_available()
+    {
+        let chips = superio::chip_detect::detect_all();
+        let mut nct_count = 0;
+        let mut ite_count = 0;
+        for chip in chips {
+            let nct_s = superio::nct67xx::Nct67xxSource::new(chip.clone(), label_overrides);
+            if nct_s.is_supported() {
+                nct_count += 1;
+                sources.push(Box::new(nct_s));
+                continue;
+            }
+            let ite_s = superio::ite87xx::Ite87xxSource::new(chip);
+            if ite_s.is_supported() {
+                ite_count += 1;
+                sources.push(Box::new(ite_s));
+            }
+        }
+        if nct_count > 0 || ite_count > 0 {
+            log::info!(
+                "Super I/O: {} nct chips, {} ite chips",
+                nct_count,
+                ite_count
+            );
+        }
+
+        // SMBus: PMBus VRM + SPD5118 DIMM temperature via AMD FCH
+        sources.push(Box::new(super::smbus_win::SmbusWinSource::discover()));
+    }
+
     sources
 }
 

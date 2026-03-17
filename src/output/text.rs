@@ -3,8 +3,11 @@ use crate::model::system::SystemInfo;
 pub fn print_summary(info: &SystemInfo) {
     println!("  sio - System Information");
     println!("  ========================");
-    if unsafe { libc::geteuid() } != 0 {
+    if !crate::platform::is_elevated() {
+        #[cfg(unix)]
         println!("  (run as root for SMART data, DMI serials, and MSR access)");
+        #[cfg(not(unix))]
+        println!("  (run as Administrator for SMART data)");
     }
     println!();
 
@@ -140,8 +143,18 @@ pub fn print_summary(info: &SystemInfo) {
     if let Some(ref me) = mb.me_version {
         println!("  ME Firmware:     {me}");
     }
-    // Show detected Super I/O chip if direct I/O is available
-    if unsafe { libc::geteuid() } == 0 {
+    // Show detected Super I/O chip if running with elevated privileges
+    let can_probe_sio = crate::platform::is_elevated() && {
+        #[cfg(windows)]
+        {
+            crate::platform::port_io_win::PortIo::is_available()
+        }
+        #[cfg(unix)]
+        {
+            true
+        }
+    };
+    if can_probe_sio {
         let chips = crate::sensors::superio::chip_detect::detect_all();
         for chip in &chips {
             let driver_status =
@@ -222,11 +235,24 @@ pub fn print_summary(info: &SystemInfo) {
                 .as_deref()
                 .map(|s| format!(" [{s}]"))
                 .unwrap_or_default();
+            #[cfg(unix)]
+            let dev_label = format!("/dev/{}:", dev.device_name);
+            #[cfg(not(unix))]
+            let dev_label = dev.device_name.clone();
+            let iface = match &dev.interface {
+                crate::model::storage::StorageInterface::Unknown(s)
+                    if s.is_empty() || s == "unknown" =>
+                {
+                    "Unknown".to_string()
+                }
+                crate::model::storage::StorageInterface::Unknown(s) => s.clone(),
+                other => format!("{other:?}"),
+            };
             println!(
-                "  /dev/{}: {} ({:?}) {}{}",
-                dev.device_name,
+                "  {} {} ({}) {}{}",
+                dev_label,
                 model,
-                dev.interface,
+                iface,
                 format_bytes(dev.capacity_bytes),
                 serial,
             );
@@ -300,7 +326,13 @@ pub fn print_summary(info: &SystemInfo) {
                     }
                 })
                 .unwrap_or_else(|| "N/A".into());
-            let driver = nic.driver.as_deref().unwrap_or("unknown");
+
+            // Build parenthetical: (interface_type, driver) or just (interface_type)
+            let iface_type = format!("{}", nic.interface_type);
+            let detail = match nic.driver.as_deref() {
+                Some(drv) => format!("{}, {}", iface_type, drv),
+                None => iface_type,
+            };
 
             // Try to find PCI device name for this NIC
             let pci_name = nic.pci_bus_address.as_ref().and_then(|addr| {
@@ -310,11 +342,9 @@ pub fn print_summary(info: &SystemInfo) {
                     .and_then(|p| p.device_name.as_deref())
             });
 
+            println!("  {}: {} ({}) [{}]", nic.name, speed, detail, nic.operstate);
             if let Some(pci_name) = pci_name {
-                println!("  {}: {} ({}) [{}]", nic.name, speed, driver, nic.operstate);
                 println!("    {pci_name}");
-            } else {
-                println!("  {}: {} ({}) [{}]", nic.name, speed, driver, nic.operstate);
             }
             if let Some(ref mac) = nic.mac_address {
                 println!("    MAC: {mac}");

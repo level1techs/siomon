@@ -1,8 +1,12 @@
 //! Raw SMBIOS/DMI table parser.
 //!
-//! Reads the binary SMBIOS structures exposed by the kernel at
-//! `/sys/firmware/dmi/tables/DMI` and extracts BIOS, system, baseboard, and
-//! memory device information without shelling out to `dmidecode`.
+//! Reads the binary SMBIOS structures exposed by the kernel and extracts BIOS,
+//! system, baseboard, and memory device information without shelling out to
+//! `dmidecode`.
+//!
+//! On Linux the data comes from `/sys/firmware/dmi/tables/DMI`.
+//! On Windows we call `GetSystemFirmwareTable('RSMB', 0, ...)` and skip the
+//! 8-byte `RawSMBIOSData` header to get at the raw table bytes.
 
 use std::path::Path;
 
@@ -39,6 +43,15 @@ pub struct BaseboardEntry {
     pub serial_number: Option<String>,
 }
 
+/// Parsed Physical Memory Array (SMBIOS Type 16).
+#[derive(Debug, Clone)]
+pub struct PhysicalMemoryArrayEntry {
+    /// Maximum capacity in bytes.  `None` if unknown/not reported.
+    pub max_capacity_bytes: Option<u64>,
+    /// Number of memory device (Type 17) slots described by this array.
+    pub number_of_devices: Option<u16>,
+}
+
 /// Parsed Memory Device (SMBIOS Type 17).
 #[derive(Debug, Clone)]
 pub struct MemoryDeviceEntry {
@@ -65,6 +78,7 @@ pub struct SmbiosData {
     pub bios: Option<BiosEntry>,
     pub system: Option<SystemEntry>,
     pub baseboard: Option<BaseboardEntry>,
+    pub physical_memory_arrays: Vec<PhysicalMemoryArrayEntry>,
     pub memory_devices: Vec<MemoryDeviceEntry>,
 }
 
@@ -72,14 +86,25 @@ pub struct SmbiosData {
 // Public API
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 const DMI_TABLE_PATH: &str = "/sys/firmware/dmi/tables/DMI";
 
-/// Parse the system's SMBIOS tables from the kernel-provided sysfs files.
+/// Parse the system's SMBIOS tables.
 ///
-/// Returns `None` if the DMI table file cannot be read (e.g. missing or
-/// permission denied).
+/// On Linux this reads from `/sys/firmware/dmi/tables/DMI`.
+/// On Windows this calls `GetSystemFirmwareTable` with the `'RSMB'` provider.
+///
+/// Returns `None` if the table data cannot be obtained.
 pub fn parse() -> Option<SmbiosData> {
-    parse_from_path(Path::new(DMI_TABLE_PATH))
+    #[cfg(unix)]
+    {
+        parse_from_path(Path::new(DMI_TABLE_PATH))
+    }
+
+    #[cfg(windows)]
+    {
+        parse_windows()
+    }
 }
 
 /// Parse SMBIOS structures from a DMI table file at an arbitrary path.
@@ -88,6 +113,64 @@ pub fn parse() -> Option<SmbiosData> {
 pub fn parse_from_path(path: &Path) -> Option<SmbiosData> {
     let data = std::fs::read(path).ok()?;
     Some(parse_table(&data))
+}
+
+/// Parse SMBIOS structures from raw table bytes (no file header, no
+/// `RawSMBIOSData` wrapper — just the packed SMBIOS structures).
+pub fn parse_from_bytes(data: &[u8]) -> Option<SmbiosData> {
+    if data.is_empty() {
+        return None;
+    }
+    Some(parse_table(data))
+}
+
+// ---------------------------------------------------------------------------
+// Windows: GetSystemFirmwareTable('RSMB')
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+fn parse_windows() -> Option<SmbiosData> {
+    use winapi::um::sysinfoapi::GetSystemFirmwareTable;
+
+    // 'RSMB' firmware table provider signature.
+    // Windows multi-character literal packing: 'R'=0x52 in MSB → 0x52534D42.
+    const RSMB: u32 = 0x5253_4D42;
+
+    // First call: query required buffer size.
+    let size = unsafe { GetSystemFirmwareTable(RSMB, 0, std::ptr::null_mut(), 0) };
+    if size == 0 {
+        log::warn!("SMBIOS: GetSystemFirmwareTable returned size 0");
+        return None;
+    }
+
+    // Second call: fill the buffer.
+    let mut buffer = vec![0u8; size as usize];
+    let written = unsafe { GetSystemFirmwareTable(RSMB, 0, buffer.as_mut_ptr() as *mut _, size) };
+    if written == 0 {
+        log::warn!("SMBIOS: GetSystemFirmwareTable failed to fill buffer");
+        return None;
+    }
+
+    // The returned data starts with an 8-byte RawSMBIOSData header:
+    //   u8  Used20CallingMethod
+    //   u8  SMBIOSMajorVersion
+    //   u8  SMBIOSMinorVersion
+    //   u8  DmiRevision
+    //   u32 Length             (little-endian)
+    //   [u8] SMBIOSTableData   — this is what we parse
+    if buffer.len() < 8 {
+        log::warn!("SMBIOS: buffer too small ({} bytes)", buffer.len());
+        return None;
+    }
+
+    log::debug!(
+        "SMBIOS: version {}.{}, table length {} bytes",
+        buffer[1],
+        buffer[2],
+        u32::from_le_bytes([buffer[4], buffer[5], buffer[6], buffer[7]])
+    );
+
+    parse_from_bytes(&buffer[8..])
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +182,7 @@ fn parse_table(data: &[u8]) -> SmbiosData {
         bios: None,
         system: None,
         baseboard: None,
+        physical_memory_arrays: Vec::new(),
         memory_devices: Vec::new(),
     };
 
@@ -151,6 +235,11 @@ fn parse_table(data: &[u8]) -> SmbiosData {
             2 => {
                 if result.baseboard.is_none() {
                     result.baseboard = Some(parse_baseboard(structure_data, struct_len));
+                }
+            }
+            16 => {
+                if let Some(arr) = parse_physical_memory_array(structure_data, struct_len) {
+                    result.physical_memory_arrays.push(arr);
                 }
             }
             17 => {
@@ -412,6 +501,47 @@ fn parse_baseboard(data: &[u8], header_len: usize) -> BaseboardEntry {
         version: get_string(data, hl, read_u8(data, 0x06).unwrap_or(0)),
         serial_number: get_string(data, hl, read_u8(data, 0x07).unwrap_or(0)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Type 16 — Physical Memory Array
+// ---------------------------------------------------------------------------
+
+fn parse_physical_memory_array(data: &[u8], header_len: usize) -> Option<PhysicalMemoryArrayEntry> {
+    // Minimum useful length: 0x0F bytes (covers Number of Memory Devices).
+    if header_len < 0x0F {
+        return None;
+    }
+
+    // Maximum Capacity at offset 0x07 (u32, kilobytes).
+    // 0x80000000 means use Extended Maximum Capacity at offset 0x0F (u64, bytes).
+    let max_capacity_bytes = {
+        let raw_kb = read_u32_le(data, 0x07).unwrap_or(0);
+        if raw_kb == 0x8000_0000 {
+            // Extended Maximum Capacity at offset 0x0F (u64, bytes).
+            if header_len > 0x16 {
+                let lo = read_u32_le(data, 0x0F).unwrap_or(0) as u64;
+                let hi = read_u32_le(data, 0x13).unwrap_or(0) as u64;
+                let val = lo | (hi << 32);
+                if val > 0 { Some(val) } else { None }
+            } else {
+                None
+            }
+        } else if raw_kb > 0 {
+            Some(raw_kb as u64 * 1024)
+        } else {
+            None
+        }
+    };
+
+    // Number of Memory Devices at offset 0x0D (u16).
+    let number_of_devices =
+        read_u16_le(data, 0x0D).and_then(|v| if v == 0 { None } else { Some(v) });
+
+    Some(PhysicalMemoryArrayEntry {
+        max_capacity_bytes,
+        number_of_devices,
+    })
 }
 
 // ---------------------------------------------------------------------------

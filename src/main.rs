@@ -3,7 +3,9 @@ use clap::{CommandFactory, FromArgMatches};
 
 use siomon::cli::{Cli, Commands, OutputFormat};
 use siomon::model::system::SystemInfo;
-use siomon::{collectors, config, db, output, platform, sensors};
+#[cfg(unix)]
+use siomon::platform;
+use siomon::{collectors, config, db, output, sensors};
 
 fn main() {
     env_logger::init();
@@ -188,18 +190,25 @@ fn join_or_default<T: Default>(result: std::thread::Result<T>, name: &str) -> T 
 fn collect_all(cli: &Cli) -> SystemInfo {
     let no_nvidia = cli.no_nvidia;
 
+    #[cfg(unix)]
     let hostname =
         platform::sysfs::read_string_optional(std::path::Path::new("/proc/sys/kernel/hostname"))
             .unwrap_or_else(|| "unknown".into());
+    #[cfg(not(unix))]
+    let hostname = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".into());
 
+    #[cfg(unix)]
     let kernel_version =
         platform::sysfs::read_string_optional(std::path::Path::new("/proc/sys/kernel/osrelease"))
             .unwrap_or_else(|| "unknown".into());
+    #[cfg(not(unix))]
+    let kernel_version = read_windows_version();
 
     // Run all collectors in parallel — the slow ones (GPU/NVML, storage/SMART,
     // PCI enumeration) no longer block each other.
     let t = std::time::Instant::now();
-    let (cpus, memory, motherboard, gpus, storage, network, pci, audio, usb, batteries) =
+    #[allow(unused_mut)]
+    let (cpus, memory, mut motherboard, gpus, storage, network, pci, audio, usb, batteries) =
         std::thread::scope(|s| {
             let h_cpu = s.spawn(|| {
                 collectors::cpu::collect().unwrap_or_else(|e| {
@@ -235,6 +244,36 @@ fn collect_all(cli: &Cli) -> SystemInfo {
         t.elapsed().as_millis()
     );
 
+    // On Windows, fill in the chipset from the PCI host bridge at 00:00.0.
+    // Prefer a device whose class is Host Bridge (0x0600) or whose pci_ids
+    // name contains "Root Complex" / "Host Bridge" keywords, since Windows
+    // PCI enumeration may place multiple devices at the same address and the
+    // class_code field may be zero (unavailable from WMI).
+    #[cfg(not(unix))]
+    {
+        if motherboard.chipset.is_none() {
+            let candidates: Vec<_> = pci.iter().filter(|d| d.address == "0000:00:00.0").collect();
+            let host_bridge = candidates
+                .iter()
+                .find(|d| (d.class_code >> 8) == 0x0600)
+                .or_else(|| {
+                    candidates.iter().find(|d| {
+                        d.device_name
+                            .as_deref()
+                            .map(|n| {
+                                let lower = n.to_lowercase();
+                                lower.contains("root complex") || lower.contains("host bridge")
+                            })
+                            .unwrap_or(false)
+                    })
+                })
+                .or_else(|| candidates.first());
+            if let Some(hb) = host_bridge {
+                motherboard.chipset = hb.device_name.clone();
+            }
+        }
+    }
+
     SystemInfo {
         timestamp: Utc::now(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -256,13 +295,62 @@ fn collect_all(cli: &Cli) -> SystemInfo {
 }
 
 fn read_os_name() -> Option<String> {
-    let content = std::fs::read_to_string("/etc/os-release").ok()?;
-    for line in content.lines() {
-        if let Some(val) = line.strip_prefix("PRETTY_NAME=") {
-            return Some(val.trim_matches('"').to_string());
+    #[cfg(unix)]
+    {
+        let content = std::fs::read_to_string("/etc/os-release").ok()?;
+        for line in content.lines() {
+            if let Some(val) = line.strip_prefix("PRETTY_NAME=") {
+                return Some(val.trim_matches('"').to_string());
+            }
         }
+        None
     }
-    None
+    #[cfg(not(unix))]
+    {
+        // Read ProductName from the Windows registry (e.g. "Windows 11 Pro")
+        let out = std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+                "/v",
+                "ProductName",
+            ])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok());
+        if let Some(text) = out {
+            for line in text.lines() {
+                // Line looks like "    ProductName    REG_SZ    Windows 11 Pro"
+                let parts: Vec<&str> = line.trim().splitn(3, "    ").collect();
+                if parts.len() == 3 && parts[0] == "ProductName" {
+                    let val = parts[2].trim().to_string();
+                    if !val.is_empty() {
+                        return Some(val);
+                    }
+                }
+            }
+        }
+        Some("Windows".to_string())
+    }
+}
+
+#[cfg(not(unix))]
+fn read_windows_version() -> String {
+    // Extract "10.0.26200.7840" from "Microsoft Windows [Version 10.0.26200.7840]"
+    std::process::Command::new("cmd")
+        .args(["/c", "ver"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            let s = s.trim();
+            let inside = s.split('[').nth(1)?;
+            let inside = inside.trim_end_matches(|c: char| c == ']' || c.is_whitespace());
+            inside
+                .strip_prefix("Version ")
+                .map(|v| v.trim().to_string())
+        })
+        .unwrap_or_else(|| "Windows".to_string())
 }
 
 /// Start a background thread that periodically writes sensor data to a CSV file.

@@ -1,10 +1,14 @@
+#[cfg(unix)]
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+#[cfg(unix)]
 use std::fs;
 
+#[cfg(unix)]
 pub struct CpuUtilSource {
     prev_jiffies: Vec<CpuJiffies>,
 }
 
+#[cfg(unix)]
 #[derive(Clone, Default)]
 struct CpuJiffies {
     /// Label from /proc/stat: "cpu" for total, "cpu0", "cpu1", etc.
@@ -19,6 +23,7 @@ struct CpuJiffies {
     steal: u64,
 }
 
+#[cfg(unix)]
 impl CpuJiffies {
     fn total(&self) -> u64 {
         self.user
@@ -36,6 +41,7 @@ impl CpuJiffies {
     }
 }
 
+#[cfg(unix)]
 impl CpuUtilSource {
     pub fn discover() -> Self {
         let prev_jiffies = parse_stat();
@@ -89,6 +95,7 @@ impl CpuUtilSource {
     }
 }
 
+#[cfg(unix)]
 impl crate::sensors::SensorSource for CpuUtilSource {
     fn name(&self) -> &str {
         "cpu_util"
@@ -99,6 +106,7 @@ impl crate::sensors::SensorSource for CpuUtilSource {
     }
 }
 
+#[cfg(unix)]
 fn parse_stat() -> Vec<CpuJiffies> {
     let Ok(content) = fs::read_to_string("/proc/stat") else {
         return Vec::new();
@@ -142,4 +150,80 @@ fn parse_stat() -> Vec<CpuJiffies> {
     }
 
     result
+}
+
+// ---------------------------------------------------------------------------
+// Windows implementation
+// ---------------------------------------------------------------------------
+
+#[cfg(not(unix))]
+pub struct CpuUtilSource {
+    sys: sysinfo::System,
+}
+
+#[cfg(not(unix))]
+impl CpuUtilSource {
+    pub fn discover() -> Self {
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_cpu_usage();
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        sys.refresh_cpu_usage();
+        Self { sys }
+    }
+}
+
+#[cfg(not(unix))]
+impl crate::sensors::SensorSource for CpuUtilSource {
+    fn name(&self) -> &str {
+        "cpu_util"
+    }
+
+    fn poll(
+        &mut self,
+    ) -> Vec<(
+        crate::model::sensor::SensorId,
+        crate::model::sensor::SensorReading,
+    )> {
+        use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+        self.sys.refresh_cpu_usage();
+        let cpus = self.sys.cpus();
+        let mut results = Vec::with_capacity(cpus.len() + 1);
+
+        for (i, cpu) in cpus.iter().enumerate() {
+            results.push((
+                SensorId {
+                    source: "cpu".to_string(),
+                    chip: "utilization".to_string(),
+                    sensor: format!("cpu{i}"),
+                },
+                SensorReading::new(
+                    format!("Core {i} Usage"),
+                    cpu.cpu_usage() as f64,
+                    SensorUnit::Percent,
+                    SensorCategory::Utilization,
+                ),
+            ));
+        }
+
+        if !cpus.is_empty() {
+            let total: f64 =
+                cpus.iter().map(|c| c.cpu_usage() as f64).sum::<f64>() / cpus.len() as f64;
+            results.push((
+                SensorId {
+                    source: "cpu".to_string(),
+                    chip: "utilization".to_string(),
+                    sensor: "total".to_string(),
+                },
+                SensorReading::new(
+                    "Total CPU Usage".to_string(),
+                    total,
+                    SensorUnit::Percent,
+                    SensorCategory::Utilization,
+                ),
+            ));
+        }
+
+        results
+    }
 }

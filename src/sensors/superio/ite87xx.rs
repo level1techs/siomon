@@ -7,7 +7,10 @@
 //! Register map derived from kernel drivers/hwmon/it87.c.
 
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+#[cfg(unix)]
 use crate::platform::port_io::PortIo;
+#[cfg(windows)]
+use crate::platform::port_io_win::PortIo;
 use crate::sensors::superio::chip_detect::{ChipType, SuperIoChip};
 
 // Voltage input registers (direct offset, no banking needed)

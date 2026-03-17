@@ -8,7 +8,10 @@ use std::collections::HashMap;
 
 use crate::db::voltage_scaling::{self, VoltageChannel};
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
+#[cfg(unix)]
 use crate::platform::sinfo_io::HwmAccess;
+#[cfg(windows)]
+use crate::platform::sinfo_io_win::HwmAccess;
 use crate::sensors::superio::chip_detect::{ChipType, SuperIoChip};
 
 // Voltage registers (bank 4, 18 channels for NCT6798)

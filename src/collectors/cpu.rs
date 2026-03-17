@@ -1,13 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
+#[cfg(unix)]
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::db::cpu_codenames;
 use crate::error::Result;
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 use crate::model::cpu::CacheLevel;
-use crate::model::cpu::{
-    CpuCache, CpuFeatures, CpuInfo, CpuTopology, CpuVendor, CpuVulnerability, NumaNode,
-};
+#[cfg(unix)]
+use crate::model::cpu::NumaNode;
+use crate::model::cpu::{CpuCache, CpuFeatures, CpuInfo, CpuTopology, CpuVendor, CpuVulnerability};
 use crate::platform::{procfs, sysfs};
 
 /// Collect CPU information, returning one `CpuInfo` per physical package.
@@ -19,7 +21,16 @@ pub fn collect() -> Result<Vec<CpuInfo>> {
 
     // Extract procfs fields from the first processor entry.
     let first_proc = cpuinfo_entries.first();
-    let microcode = first_proc.and_then(|p| p.get("microcode").cloned());
+    let microcode = first_proc.and_then(|p| p.get("microcode").cloned()).or({
+        #[cfg(not(unix))]
+        {
+            read_windows_microcode()
+        }
+        #[cfg(unix)]
+        {
+            None
+        }
+    });
     let vulnerabilities = gather_vulnerabilities();
     let (phys_addr_bits, virt_addr_bits) = parse_address_sizes(first_proc);
 
@@ -439,6 +450,35 @@ fn parse_hex_or_dec(s: &str) -> Option<u32> {
 // Topology from sysfs
 // ---------------------------------------------------------------------------
 
+#[cfg(not(unix))]
+fn gather_topology() -> CpuTopology {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    let logical = sys.cpus().len() as u32;
+    let physical = sys.physical_core_count().unwrap_or(logical as usize) as u32;
+    let physical = physical.max(1);
+    let logical = logical.max(physical);
+    let smt_enabled = logical > physical;
+    let threads_per_core = if smt_enabled && physical > 0 {
+        logical / physical
+    } else {
+        1
+    };
+    CpuTopology {
+        packages: 1,
+        dies_per_package: 1,
+        physical_cores: physical,
+        logical_processors: logical,
+        smt_enabled,
+        threads_per_core,
+        cores_per_die: Some(physical),
+        numa_nodes: vec![],
+        online_cpus: format!("0-{}", logical.saturating_sub(1)),
+    }
+}
+
+#[cfg(unix)]
 fn gather_topology() -> CpuTopology {
     let cpu_dirs = sysfs::glob_paths("/sys/devices/system/cpu/cpu[0-9]*");
     let logical_processors = cpu_dirs.len() as u32;
@@ -507,6 +547,7 @@ fn gather_topology() -> CpuTopology {
     }
 }
 
+#[cfg(unix)]
 fn gather_numa_nodes() -> Vec<NumaNode> {
     let mut nodes = Vec::new();
     let node_dirs = sysfs::glob_paths("/sys/devices/system/node/node[0-9]*");
@@ -537,6 +578,7 @@ fn gather_numa_nodes() -> Vec<NumaNode> {
     nodes
 }
 
+#[cfg(unix)]
 fn parse_numa_meminfo(path: &Path) -> Option<u64> {
     let content = std::fs::read_to_string(path).ok()?;
     for line in content.lines() {
@@ -554,6 +596,7 @@ fn parse_numa_meminfo(path: &Path) -> Option<u64> {
 }
 
 /// Count entries in a CPU list string like "0-3,5,7" or "0,2".
+#[cfg(unix)]
 fn count_cpulist_entries(list: &str) -> u32 {
     let mut count = 0u32;
     for part in list.split(',') {
@@ -579,6 +622,21 @@ struct FrequencyInfo {
     scaling_driver: Option<String>,
 }
 
+#[cfg(not(unix))]
+fn gather_frequency() -> FrequencyInfo {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    // sysinfo reports the current frequency; use it as the boost/max indicator
+    let freq_mhz = sys.cpus().first().map(|c| c.frequency() as f64);
+    FrequencyInfo {
+        base_clock_mhz: None,
+        boost_clock_mhz: freq_mhz,
+        scaling_driver: None,
+    }
+}
+
+#[cfg(unix)]
 fn gather_frequency() -> FrequencyInfo {
     let cpufreq = Path::new("/sys/devices/system/cpu/cpu0/cpufreq");
 
@@ -662,6 +720,43 @@ fn parse_address_sizes(entry: Option<&HashMap<String, String>>) -> (Option<u8>, 
     }
 
     (physical, virtual_)
+}
+
+#[cfg(not(unix))]
+fn read_windows_microcode() -> Option<String> {
+    let output = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            "/v",
+            "Update Revision",
+        ])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Line looks like: "    Update Revision    REG_BINARY    00000000XXXXXXXX"
+    // The hex string after REG_BINARY contains the revision
+    for line in text.lines() {
+        if line.contains("Update Revision") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if let Some(hex) = parts.last() {
+                // The revision is in the upper 4 bytes (bytes 4-7 of the 8-byte value)
+                if hex.len() >= 16 {
+                    let rev = &hex[8..16]; // upper 4 bytes
+                    let trimmed = rev.trim_start_matches('0');
+                    if !trimmed.is_empty() {
+                        return Some(format!("0x{}", trimmed));
+                    }
+                }
+                // Fallback: return full hex
+                let trimmed = hex.trim_start_matches('0');
+                if !trimmed.is_empty() {
+                    return Some(format!("0x{}", trimmed));
+                }
+            }
+        }
+    }
+    None
 }
 
 pub struct CpuCollector;

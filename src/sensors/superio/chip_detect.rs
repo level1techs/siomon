@@ -4,7 +4,10 @@
 //! the hardware monitoring chip and read its base address. This is the same
 //! detection method used by `sensors-detect` and is read-only safe.
 
+#[cfg(unix)]
 use crate::platform::port_io::PortIo;
+#[cfg(windows)]
+use crate::platform::port_io_win::PortIo;
 
 /// Identified Super I/O chip with its hardware monitor base address.
 #[derive(Debug, Clone)]
@@ -86,7 +89,7 @@ pub fn detect_all() -> Vec<SuperIoChip> {
     let mut pio = match PortIo::open() {
         Some(p) => p,
         None => {
-            log::debug!("Cannot open /dev/port for Super I/O detection");
+            log::debug!("Cannot open port I/O for Super I/O detection");
             return Vec::new();
         }
     };
@@ -258,24 +261,34 @@ fn identify_ite(chip_id: u16) -> ChipType {
 }
 
 /// Check if the kernel nct6775 driver module is currently loaded.
+///
+/// On Windows there is no Linux kernel driver, so this always returns false.
 pub fn is_kernel_driver_loaded(chip: &ChipType) -> bool {
-    let module_name = match chip {
-        ChipType::Nct6775
-        | ChipType::Nct6776
-        | ChipType::Nct6779
-        | ChipType::Nct6791
-        | ChipType::Nct6792
-        | ChipType::Nct6793
-        | ChipType::Nct6795
-        | ChipType::Nct6796
-        | ChipType::Nct6797
-        | ChipType::Nct6798
-        | ChipType::Nct6799 => "nct6775",
-        ChipType::Ite8686 | ChipType::Ite8688 | ChipType::Ite8689 => "it87",
-        ChipType::Unknown => return false,
-    };
+    #[cfg(unix)]
+    {
+        let module_name = match chip {
+            ChipType::Nct6775
+            | ChipType::Nct6776
+            | ChipType::Nct6779
+            | ChipType::Nct6791
+            | ChipType::Nct6792
+            | ChipType::Nct6793
+            | ChipType::Nct6795
+            | ChipType::Nct6796
+            | ChipType::Nct6797
+            | ChipType::Nct6798
+            | ChipType::Nct6799 => "nct6775",
+            ChipType::Ite8686 | ChipType::Ite8688 | ChipType::Ite8689 => "it87",
+            ChipType::Unknown => return false,
+        };
 
-    std::path::Path::new(&format!("/sys/module/{module_name}")).exists()
+        std::path::Path::new(&format!("/sys/module/{module_name}")).exists()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = chip;
+        false
+    }
 }
 
 #[cfg(test)]

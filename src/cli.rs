@@ -5,7 +5,7 @@ use crate::config::SiomonConfig;
 #[derive(Parser, Debug)]
 #[command(
     name = "sio",
-    about = "Linux hardware information and sensor monitoring",
+    about = "Hardware information and sensor monitoring",
     version,
     author
 )]
@@ -29,7 +29,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_nvidia: bool,
 
-    /// Enable direct I/O port and I2C sensor reading (requires root)
+    /// Enable direct I/O port and I2C sensor reading (requires root/admin)
     #[arg(long, global = true)]
     pub direct_io: bool,
 
