@@ -33,18 +33,18 @@ fn main() {
 
     // TUI monitor mode
     if cli.tui {
-        run_monitor(&cli, label_overrides);
+        run_monitor(&cli, &config, label_overrides);
         return;
     }
 
     // Sensor snapshot or one-shot commands
     if let Some(Commands::Sensors) = &cli.command {
-        run_sensor_snapshot(&cli, &label_overrides);
+        run_sensor_snapshot(&cli, &config, &label_overrides);
         return;
     }
 
     // Standard hardware info collection
-    let info = collect_all(&cli);
+    let info = collect_all(&cli, &config);
 
     let print_formatted = |info: &SystemInfo| match cli.format {
         #[cfg(feature = "json")]
@@ -87,7 +87,11 @@ fn main() {
     }
 }
 
-fn run_monitor(cli: &Cli, label_overrides: std::collections::HashMap<String, String>) {
+fn run_monitor(
+    cli: &Cli,
+    config: &config::SiomonConfig,
+    label_overrides: std::collections::HashMap<String, String>,
+) {
     #[cfg(feature = "tui")]
     {
         let state = sensors::poller::new_state();
@@ -99,6 +103,7 @@ fn run_monitor(cli: &Cli, label_overrides: std::collections::HashMap<String, Str
             cli.no_nvidia,
             cli.direct_io,
             label_overrides,
+            config.general.storage_exclude.clone(),
         );
         let _handle = poller.spawn();
 
@@ -137,13 +142,22 @@ fn run_monitor(cli: &Cli, label_overrides: std::collections::HashMap<String, Str
 
     #[cfg(not(feature = "tui"))]
     {
-        let _ = (cli, label_overrides);
+        let _ = (cli, config, label_overrides);
         eprintln!("TUI not available — compile with the 'tui' feature");
     }
 }
 
-fn run_sensor_snapshot(cli: &Cli, label_overrides: &std::collections::HashMap<String, String>) {
-    let readings = sensors::poller::snapshot(cli.no_nvidia, cli.direct_io, label_overrides);
+fn run_sensor_snapshot(
+    cli: &Cli,
+    config: &config::SiomonConfig,
+    label_overrides: &std::collections::HashMap<String, String>,
+) {
+    let readings = sensors::poller::snapshot(
+        cli.no_nvidia,
+        cli.direct_io,
+        label_overrides,
+        &config.general.storage_exclude,
+    );
     let mut sorted: Vec<_> = readings.into_iter().collect();
     sorted.sort_by(|a, b| a.0.natural_cmp(&b.0));
 
@@ -198,8 +212,9 @@ fn join_or_default<T: Default>(result: std::thread::Result<T>, name: &str) -> T 
     }
 }
 
-fn collect_all(cli: &Cli) -> SystemInfo {
+fn collect_all(cli: &Cli, config: &config::SiomonConfig) -> SystemInfo {
     let no_nvidia = cli.no_nvidia;
+    let storage_exclude = config.general.storage_exclude.clone();
 
     let hostname =
         platform::sysfs::read_string_optional(std::path::Path::new("/proc/sys/kernel/hostname"))
@@ -223,7 +238,7 @@ fn collect_all(cli: &Cli) -> SystemInfo {
             let h_mem = s.spawn(collectors::memory::collect);
             let h_board = s.spawn(collectors::motherboard::collect);
             let h_gpu = s.spawn(move || collectors::gpu::collect(no_nvidia));
-            let h_stor = s.spawn(collectors::storage::collect);
+            let h_stor = s.spawn(|| collectors::storage::collect(&storage_exclude));
             let h_net = s.spawn(|| collectors::network::collect(true));
             let h_pci = s.spawn(collectors::pci::collect);
             let h_audio = s.spawn(collectors::audio::collect);

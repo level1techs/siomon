@@ -7,6 +7,7 @@ use std::time::Instant;
 pub struct DiskActivitySource {
     prev_stats: HashMap<String, DiskStat>,
     prev_time: Instant,
+    storage_exclude: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -16,16 +17,17 @@ struct DiskStat {
 }
 
 impl DiskActivitySource {
-    pub fn discover() -> Self {
-        let prev_stats = parse_diskstats();
+    pub fn discover(storage_exclude: &[String]) -> Self {
+        let prev_stats = parse_diskstats(storage_exclude);
         Self {
             prev_stats,
             prev_time: Instant::now(),
+            storage_exclude: storage_exclude.to_vec(),
         }
     }
 
     pub fn poll(&mut self) -> Vec<(SensorId, SensorReading)> {
-        let current = parse_diskstats();
+        let current = parse_diskstats(&self.storage_exclude);
         let now = Instant::now();
         let elapsed_secs = now.duration_since(self.prev_time).as_secs_f64();
         let mut readings = Vec::new();
@@ -97,7 +99,7 @@ impl crate::sensors::SensorSource for DiskActivitySource {
     }
 }
 
-fn parse_diskstats() -> HashMap<String, DiskStat> {
+fn parse_diskstats(storage_exclude: &[String]) -> HashMap<String, DiskStat> {
     let mut stats = HashMap::new();
     let Ok(content) = fs::read_to_string("/proc/diskstats") else {
         return stats;
@@ -113,8 +115,8 @@ fn parse_diskstats() -> HashMap<String, DiskStat> {
 
         let device = fields[2];
 
-        // Filter to real block devices: skip partitions (e.g. sda1), loop, ram, dm devices
-        if !is_real_block_device(device) {
+        // Filter to real block devices: skip partitions (e.g. sda1) and excluded prefixes
+        if !is_real_block_device(device, storage_exclude) {
             continue;
         }
 
@@ -139,9 +141,12 @@ fn parse_diskstats() -> HashMap<String, DiskStat> {
     stats
 }
 
-fn is_real_block_device(name: &str) -> bool {
-    // Skip loop, ram, and dm- devices
-    if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("dm-") {
+fn is_real_block_device(name: &str, storage_exclude: &[String]) -> bool {
+    // Skip devices matching configurable exclude prefixes
+    if storage_exclude
+        .iter()
+        .any(|prefix| name.starts_with(prefix.as_str()))
+    {
         return false;
     }
 

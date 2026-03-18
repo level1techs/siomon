@@ -34,6 +34,7 @@ pub struct Poller {
     no_nvidia: bool,
     direct_io: bool,
     label_overrides: HashMap<String, String>,
+    storage_exclude: Vec<String>,
 }
 
 impl Poller {
@@ -44,6 +45,7 @@ impl Poller {
         no_nvidia: bool,
         direct_io: bool,
         label_overrides: HashMap<String, String>,
+        storage_exclude: Vec<String>,
     ) -> Self {
         Self {
             state,
@@ -52,6 +54,7 @@ impl Poller {
             no_nvidia,
             direct_io,
             label_overrides,
+            storage_exclude,
         }
     }
 
@@ -71,8 +74,12 @@ impl Poller {
     }
 
     fn run(self, stop: Arc<std::sync::atomic::AtomicBool>) {
-        let mut sources =
-            discover_all_sources(self.no_nvidia, self.direct_io, &self.label_overrides);
+        let mut sources = discover_all_sources(
+            self.no_nvidia,
+            self.direct_io,
+            &self.label_overrides,
+            &self.storage_exclude,
+        );
 
         log::info!("Sensor poller started: {} sources", sources.len());
 
@@ -171,6 +178,7 @@ fn discover_all_sources(
     no_nvidia: bool,
     direct_io: bool,
     label_overrides: &HashMap<String, String>,
+    storage_exclude: &[String],
 ) -> Vec<Box<dyn SensorSource>> {
     use std::thread;
     use std::time::Instant;
@@ -259,7 +267,7 @@ fn discover_all_sources(
             Box::new(cpu_freq::CpuFreqSource::discover()),
             Box::new(cpu_util::CpuUtilSource::discover()),
             Box::new(rapl::RaplSource::discover()),
-            Box::new(disk_activity::DiskActivitySource::discover()),
+            Box::new(disk_activity::DiskActivitySource::discover(storage_exclude)),
             Box::new(network_stats::NetworkStatsSource::discover()),
             Box::new(super::edac::EdacSource::discover()),
             Box::new(super::aer::AerSource::discover()),
@@ -294,8 +302,9 @@ pub fn snapshot(
     no_nvidia: bool,
     direct_io: bool,
     label_overrides: &HashMap<String, String>,
+    storage_exclude: &[String],
 ) -> HashMap<SensorId, SensorReading> {
-    let mut sources = discover_all_sources(no_nvidia, direct_io, label_overrides);
+    let mut sources = discover_all_sources(no_nvidia, direct_io, label_overrides, storage_exclude);
 
     // Short sleep for delta-based sources to have meaningful deltas
     thread::sleep(Duration::from_millis(250));

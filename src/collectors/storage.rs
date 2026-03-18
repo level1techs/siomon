@@ -2,7 +2,7 @@ use crate::model::storage::{NvmeDetails, SmartData, StorageDevice, StorageInterf
 use crate::platform::{nvme_ioctl, sata_ioctl, sysfs};
 use std::path::Path;
 
-pub fn collect() -> Vec<StorageDevice> {
+pub fn collect(storage_exclude: &[String]) -> Vec<StorageDevice> {
     let mut devices = Vec::new();
 
     for entry in sysfs::glob_paths("/sys/class/block/*") {
@@ -11,13 +11,10 @@ pub fn collect() -> Vec<StorageDevice> {
             None => continue,
         };
 
-        // Skip partitions, loop, dm, ram, zram devices
-        if name.starts_with("loop")
-            || name.starts_with("dm-")
-            || name.starts_with("ram")
-            || name.starts_with("zram")
-            || name.starts_with("sr")
-            || name.starts_with("nbd")
+        // Skip virtual/pseudo devices by configurable prefix list
+        if storage_exclude
+            .iter()
+            .any(|prefix| name.starts_with(prefix.as_str()))
         {
             continue;
         }
@@ -43,7 +40,8 @@ impl crate::collectors::Collector for StorageCollector {
     }
 
     fn collect_into(&self, info: &mut crate::model::system::SystemInfo) {
-        info.storage = collect();
+        let defaults = crate::config::GeneralConfig::default().storage_exclude;
+        info.storage = collect(&defaults);
     }
 }
 

@@ -23,6 +23,9 @@ pub struct GeneralConfig {
     pub no_nvidia: bool,
     #[serde(default = "default_color")]
     pub color: String,
+    /// Block device name prefixes to exclude from storage listings and disk sensors.
+    #[serde(default = "default_storage_exclude")]
+    pub storage_exclude: Vec<String>,
 }
 
 fn default_format() -> String {
@@ -37,6 +40,12 @@ fn default_true() -> bool {
 fn default_color() -> String {
     "auto".into()
 }
+fn default_storage_exclude() -> Vec<String> {
+    ["loop", "dm-", "ram", "zram", "sr", "nbd", "zd", "md"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
 
 impl Default for GeneralConfig {
     fn default() -> Self {
@@ -46,6 +55,7 @@ impl Default for GeneralConfig {
             physical_net_only: default_true(),
             no_nvidia: false,
             color: default_color(),
+            storage_exclude: default_storage_exclude(),
         }
     }
 }
@@ -105,6 +115,8 @@ mod tests {
         assert!(cfg.general.physical_net_only);
         assert!(!cfg.general.no_nvidia);
         assert_eq!(cfg.general.color, "auto");
+        assert!(cfg.general.storage_exclude.contains(&"zd".to_string()));
+        assert!(cfg.general.storage_exclude.contains(&"loop".to_string()));
         assert!(cfg.sensor_labels.is_empty());
     }
 
@@ -125,6 +137,7 @@ poll_interval_ms = 500
 physical_net_only = false
 no_nvidia = true
 color = "never"
+storage_exclude = ["loop", "zd", "custom"]
 
 [sensor_labels]
 "hwmon/nct6798/in0" = "Vcore"
@@ -136,6 +149,7 @@ color = "never"
         assert!(!cfg.general.physical_net_only);
         assert!(cfg.general.no_nvidia);
         assert_eq!(cfg.general.color, "never");
+        assert_eq!(cfg.general.storage_exclude, vec!["loop", "zd", "custom"]);
         assert_eq!(cfg.sensor_labels.get("hwmon/nct6798/in0").unwrap(), "Vcore");
         assert_eq!(
             cfg.sensor_labels.get("hwmon/nct6798/fan1").unwrap(),
