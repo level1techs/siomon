@@ -94,6 +94,7 @@ fn run_monitor(
 ) {
     #[cfg(feature = "tui")]
     {
+        let theme = output::tui::theme::TuiTheme::resolve(&config.general.theme, &cli.color);
         let state = sensors::poller::new_state();
         let poll_stats = sensors::poller::new_poll_stats();
         let poller = sensors::poller::Poller::new(
@@ -129,7 +130,7 @@ fn run_monitor(
             })
             .collect();
 
-        if let Err(e) = output::tui::run(state, poll_stats, cli.interval, alert_rules) {
+        if let Err(e) = output::tui::run(state, poll_stats, cli.interval, alert_rules, theme) {
             eprintln!("TUI error: {e}");
         }
 

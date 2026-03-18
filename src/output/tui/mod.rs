@@ -3,7 +3,7 @@ use std::io::{self, Stdout, Write};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -11,13 +11,16 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::sensors::poller::PollStatsState;
 
 mod dashboard;
+pub mod theme;
+
+use theme::TuiTheme;
 
 #[derive(Clone, Copy, PartialEq)]
 enum ViewMode {
@@ -111,6 +114,7 @@ pub fn run(
     poll_stats: PollStatsState,
     poll_interval_ms: u64,
     alert_rules: Vec<crate::sensors::alerts::AlertRule>,
+    theme: TuiTheme,
 ) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -140,6 +144,7 @@ pub fn run(
         &poll_stats,
         poll_interval_ms,
         alert_rules,
+        &theme,
     );
 
     // Best-effort cleanup: disable mouse modes before leaving alternate screen
@@ -158,6 +163,7 @@ fn run_loop(
     poll_stats: &PollStatsState,
     poll_interval_ms: u64,
     alert_rules: Vec<crate::sensors::alerts::AlertRule>,
+    theme: &TuiTheme,
 ) -> io::Result<()> {
     let start = Instant::now();
     let mut scroll_offset: usize = 0;
@@ -221,7 +227,7 @@ fn run_loop(
             ViewMode::Tree => {
                 let filter_lc = filter_query.to_ascii_lowercase();
                 let (display_rows, group_indices_new, collapse_key_vec_new) =
-                    build_rows(&snapshot, &collapsed, &filter_lc, &history);
+                    build_rows(&snapshot, &collapsed, &filter_lc, &history, theme);
                 group_indices = group_indices_new;
                 collapse_key_vec = collapse_key_vec_new;
                 last_total_rows = display_rows.len();
@@ -275,11 +281,19 @@ fn run_loop(
                     poll_warning: &poll_warning,
                     filter_mode,
                     filter_query: &filter_query,
+                    theme,
                 };
                 draw(terminal, display_rows, &ctx)?;
             }
             ViewMode::Dashboard => {
-                dashboard::render(terminal, &snapshot, &history, &elapsed_str, sensor_count)?;
+                dashboard::render(
+                    terminal,
+                    &snapshot,
+                    &history,
+                    &elapsed_str,
+                    sensor_count,
+                    theme,
+                )?;
             }
         }
 
@@ -292,6 +306,12 @@ fn run_loop(
             loop {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        // Ctrl+C quits from any mode
+                        if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            return Ok(());
+                        }
                         needs_redraw = true;
                         if filter_mode {
                             match key.code {
@@ -544,8 +564,13 @@ fn compute_summaries(snapshot: &[(SensorId, SensorReading)]) -> HashMap<String, 
 }
 
 /// Build a collapsed summary row with min-max range in the value columns.
-fn summary_row(header_text: String, style: Style, summary: Option<&Summary>) -> Row<'static> {
-    let summary_style = Style::default().fg(Color::DarkGray);
+fn summary_row(
+    header_text: String,
+    style: Style,
+    summary: Option<&Summary>,
+    theme: &TuiTheme,
+) -> Row<'static> {
+    let summary_style = theme.muted_style();
     let cells = if let Some(s) = summary {
         let p = s.precision;
         vec![
@@ -668,6 +693,7 @@ fn build_rows(
     collapsed: &HashSet<String>,
     filter_lc: &str,
     history: &SensorHistory,
+    theme: &TuiTheme,
 ) -> (Vec<Row<'static>>, Vec<usize>, Vec<String>) {
     let order = sorted_indices(snapshot);
     let summaries = compute_summaries(snapshot);
@@ -680,13 +706,9 @@ fn build_rows(
     let mut cur_chip: Option<String> = None;
     let mut cur_cat: Option<String> = None;
 
-    let source_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let chip_style = Style::default()
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD);
-    let cat_style = Style::default().fg(Color::Cyan);
+    let source_style = theme.source_style();
+    let chip_style = theme.chip_style();
+    let cat_style = theme.cat_style();
 
     for &idx in &order {
         let (id, reading) = &snapshot[idx];
@@ -728,7 +750,7 @@ fn build_rows(
             collapse_keys.push(sk.clone());
 
             if is_collapsed {
-                rows.push(summary_row(text, source_style, summaries.get(sk)));
+                rows.push(summary_row(text, source_style, summaries.get(sk), theme));
                 continue;
             } else {
                 rows.push(header_row(text, source_style));
@@ -752,7 +774,7 @@ fn build_rows(
             collapse_keys.push(ck.clone());
 
             if is_collapsed {
-                rows.push(summary_row(text, chip_style, summaries.get(&ck)));
+                rows.push(summary_row(text, chip_style, summaries.get(&ck), theme));
                 continue;
             } else {
                 rows.push(header_row(text, chip_style));
@@ -775,7 +797,7 @@ fn build_rows(
             collapse_keys.push(catk.clone());
 
             if is_collapsed {
-                rows.push(summary_row(text, cat_style, summaries.get(&catk)));
+                rows.push(summary_row(text, cat_style, summaries.get(&catk), theme));
                 continue;
             } else {
                 rows.push(header_row(text, cat_style));
@@ -787,7 +809,7 @@ fn build_rows(
 
         // Level 4: Sensor row — highlight matched characters when filter is active
         let precision = format_precision(&reading.unit);
-        let style = value_style(reading);
+        let style = theme.value_style(reading);
         let label_text = if !filter_lc.is_empty() {
             // Mark matches visually with surrounding brackets
             highlight_match(&reading.label, filter_lc)
@@ -809,7 +831,7 @@ fn build_rows(
             Cell::from(format!("{:.prec$}", reading.max, prec = precision)),
             Cell::from(format!("{:.prec$}", reading.avg, prec = precision)),
             Cell::from(format!("{}", reading.unit)),
-            Cell::from(spark).style(Style::default().fg(Color::DarkGray)),
+            Cell::from(spark).style(theme.muted_style()),
         ]);
         rows.push(row);
     }
@@ -851,6 +873,7 @@ struct DrawContext<'a> {
     poll_warning: &'a str,
     filter_mode: bool,
     filter_query: &'a str,
+    theme: &'a TuiTheme,
 }
 
 fn draw(
@@ -893,23 +916,15 @@ fn draw(
             " sio \u{2014} Sensor Monitor | {} sensors | {} groups ({} collapsed) | {}{}",
             ctx.sensor_count, total_groups, ctx.collapsed_count, ctx.elapsed_str, priv_hint
         );
-        let header_block = Paragraph::new(title)
-            .style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .block(
-                Block::default()
-                    .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            );
+        let header_block = Paragraph::new(title).style(ctx.theme.accent_style()).block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(ctx.theme.border_style()),
+        );
         frame.render_widget(header_block, chunks[0]);
 
         // Main table
-        let hdr_style = Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
+        let hdr_style = ctx.theme.label_style().add_modifier(Modifier::BOLD);
         let table_header = Row::new(vec![
             Cell::from("Label").style(hdr_style),
             Cell::from("Current").style(hdr_style),
@@ -921,7 +936,7 @@ fn draw(
         ])
         .height(1)
         .bottom_margin(1)
-        .style(Style::default().bg(Color::DarkGray));
+        .style(Style::default().bg(ctx.theme.border));
 
         // Apply cursor highlight and scrolling
         let visible_rows: Vec<Row> = rows
@@ -930,7 +945,7 @@ fn draw(
             .skip(ctx.scroll_offset)
             .map(|(idx, row)| {
                 if Some(idx) == cursor_row_idx {
-                    row.style(Style::default().bg(Color::DarkGray))
+                    row.style(ctx.theme.cursor_style())
                 } else {
                     row
                 }
@@ -964,7 +979,7 @@ fn draw(
 
         // Filter bar
         if let Some(fc) = filter_chunk_opt {
-            render_filter_bar(frame, fc, ctx.filter_mode, ctx.filter_query);
+            render_filter_bar(frame, fc, ctx.filter_mode, ctx.filter_query, ctx.theme);
         }
 
         // Status bar
@@ -980,6 +995,7 @@ fn render_filter_bar(
     area: ratatui::layout::Rect,
     filter_mode: bool,
     filter_query: &str,
+    theme: &TuiTheme,
 ) {
     let filter_text = if filter_mode {
         format!(" / {}\u{2588}", filter_query)
@@ -987,9 +1003,9 @@ fn render_filter_bar(
         format!(" / {} (Esc to clear)", filter_query)
     };
     let filter_style = if filter_mode {
-        Style::default().fg(Color::Black).bg(Color::Yellow)
+        theme.search_active_style()
     } else {
-        Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+        theme.search_inactive_style()
     };
     frame.render_widget(Paragraph::new(filter_text).style(filter_style), area);
 }
@@ -1024,12 +1040,9 @@ fn render_status_bar(
         )
     };
     let status_style = if ctx.active_alerts.is_empty() {
-        Style::default().fg(Color::DarkGray).bg(Color::Black)
+        ctx.theme.status_style()
     } else {
-        Style::default()
-            .fg(Color::Yellow)
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD)
+        ctx.theme.alert_status_style()
     };
     frame.render_widget(Paragraph::new(status).style(status_style), area);
 }
@@ -1049,40 +1062,6 @@ pub(crate) fn format_precision(unit: &SensorUnit) -> usize {
         | SensorUnit::Bytes
         | SensorUnit::Megabytes => 1,
         SensorUnit::Unitless => 1,
-    }
-}
-
-pub(crate) fn value_style(reading: &SensorReading) -> Style {
-    match reading.category {
-        SensorCategory::Temperature => {
-            if reading.current > 80.0 {
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-            } else if reading.current >= 60.0 {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::Green)
-            }
-        }
-        SensorCategory::Fan => {
-            if reading.current == 0.0 {
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Cyan)
-            }
-        }
-        SensorCategory::Power => Style::default().fg(Color::Magenta),
-        SensorCategory::Voltage => Style::default().fg(Color::Blue),
-        SensorCategory::Frequency => Style::default().fg(Color::Cyan),
-        SensorCategory::Utilization => {
-            if reading.current > 90.0 {
-                Style::default().fg(Color::Red)
-            } else if reading.current > 70.0 {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default().fg(Color::Green)
-            }
-        }
-        _ => Style::default(),
     }
 }
 

@@ -4,13 +4,13 @@ use std::io::{self, Stdout};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading};
 
-use super::{SensorHistory, format_precision, sparkline_str, value_style};
+use super::{SensorHistory, format_precision, sparkline_str, theme::TuiTheme};
 
 /// Maximum sensors shown per panel.
 const MAX_PANEL_ENTRIES: usize = 6;
@@ -21,6 +21,7 @@ pub fn render(
     history: &SensorHistory,
     elapsed_str: &str,
     sensor_count: usize,
+    theme: &TuiTheme,
 ) -> io::Result<()> {
     terminal.draw(|frame| {
         let size = frame.area();
@@ -40,27 +41,23 @@ pub fn render(
         let header = Paragraph::new(format!(
             " sio dashboard | {sensor_count} sensors | {elapsed_str}"
         ))
-        .style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
+        .style(theme.accent_style())
         .block(
             Block::default()
                 .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(theme.border_style()),
         );
         frame.render_widget(header, outer[0]);
 
         // Status bar
         let status = Paragraph::new(format!(
-            " d: tree view | /: search | {sensor_count} sensors | {elapsed_str}"
+            " q: quit | d: tree view | /: search | {sensor_count} sensors | {elapsed_str}"
         ))
-        .style(Style::default().fg(Color::DarkGray).bg(Color::Black));
+        .style(theme.status_style());
         frame.render_widget(status, outer[2]);
 
         // Build panel data
-        let panels = build_panels(snapshot, history, size.width);
+        let panels = build_panels(snapshot, history, size.width, theme);
 
         if panels.is_empty() {
             return;
@@ -71,9 +68,9 @@ pub fn render(
             panels.into_iter().partition(|p| p.title != "Errors");
 
         if wide {
-            render_wide(frame, outer[1], &normal, &errors);
+            render_wide(frame, outer[1], &normal, &errors, theme);
         } else {
-            render_narrow(frame, outer[1], &normal, &errors);
+            render_narrow(frame, outer[1], &normal, &errors, theme);
         }
     })?;
     Ok(())
@@ -91,7 +88,13 @@ enum Column {
     Right,
 }
 
-fn render_wide(frame: &mut ratatui::Frame, area: Rect, normal: &[Panel<'_>], errors: &[Panel<'_>]) {
+fn render_wide(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    normal: &[Panel<'_>],
+    errors: &[Panel<'_>],
+    theme: &TuiTheme,
+) {
     let errors_height = if errors.is_empty() {
         0
     } else {
@@ -118,12 +121,17 @@ fn render_wide(frame: &mut ratatui::Frame, area: Rect, normal: &[Panel<'_>], err
         .filter(|p| matches!(p.column, Column::Right))
         .collect();
 
-    render_column(frame, cols[0], &left);
-    render_column(frame, cols[1], &right);
+    render_column(frame, cols[0], &left, theme);
+    render_column(frame, cols[1], &right, theme);
 
     // Errors full width
     if !errors.is_empty() {
-        render_column(frame, main_split[1], &errors.iter().collect::<Vec<_>>());
+        render_column(
+            frame,
+            main_split[1],
+            &errors.iter().collect::<Vec<_>>(),
+            theme,
+        );
     }
 }
 
@@ -132,12 +140,13 @@ fn render_narrow(
     area: Rect,
     normal: &[Panel<'_>],
     errors: &[Panel<'_>],
+    theme: &TuiTheme,
 ) {
     let all: Vec<&Panel<'_>> = normal.iter().chain(errors.iter()).collect();
-    render_column(frame, area, &all);
+    render_column(frame, area, &all, theme);
 }
 
-fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>]) {
+fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], theme: &TuiTheme) {
     if panels.is_empty() {
         return;
     }
@@ -158,11 +167,11 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>]) 
             .title(format!(" {} ", panel.title))
             .title_style(
                 Style::default()
-                    .fg(Color::White)
+                    .fg(theme.label)
                     .add_modifier(Modifier::BOLD),
             )
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(theme.border_style());
         let paragraph = Paragraph::new(panel.lines.clone()).block(block);
         frame.render_widget(paragraph, chunks[i]);
     }
@@ -172,35 +181,36 @@ fn build_panels<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
     term_width: u16,
+    theme: &TuiTheme,
 ) -> Vec<Panel<'a>> {
     let spark_width = if term_width >= 120 { 15 } else { 10 };
     let mut panels = Vec::new();
 
-    if let Some(p) = build_cpu_panel(snapshot, history, spark_width) {
+    if let Some(p) = build_cpu_panel(snapshot, history, spark_width, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_thermal_panel(snapshot, history, spark_width) {
+    if let Some(p) = build_thermal_panel(snapshot, history, spark_width, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_memory_panel(snapshot) {
+    if let Some(p) = build_memory_panel(snapshot, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_power_panel(snapshot, history, spark_width) {
+    if let Some(p) = build_power_panel(snapshot, history, spark_width, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_storage_panel(snapshot) {
+    if let Some(p) = build_storage_panel(snapshot, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_network_panel(snapshot) {
+    if let Some(p) = build_network_panel(snapshot, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_fans_panel(snapshot) {
+    if let Some(p) = build_fans_panel(snapshot, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_platform_panel(snapshot) {
+    if let Some(p) = build_platform_panel(snapshot, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_errors_panel(snapshot) {
+    if let Some(p) = build_errors_panel(snapshot, theme) {
         panels.push(p);
     }
 
@@ -215,6 +225,7 @@ fn build_cpu_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
     spark_width: usize,
+    theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let util_sensors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
@@ -236,10 +247,13 @@ fn build_cpu_panel<'a>(
             .map(|buf| sparkline_str(buf, spark_width))
             .unwrap_or_default();
         lines.push(Line::from(vec![
-            Span::styled("Total: ", Style::default().fg(Color::White)),
-            Span::styled(format!("{:5.1}%", reading.current), value_style(reading)),
+            Span::styled("Total: ", theme.label_style()),
+            Span::styled(
+                format!("{:5.1}%", reading.current),
+                theme.value_style(reading),
+            ),
             Span::raw("  "),
-            Span::styled(spark, Style::default().fg(Color::DarkGray)),
+            Span::styled(spark, theme.muted_style()),
         ]));
     }
 
@@ -259,14 +273,14 @@ fn build_cpu_panel<'a>(
         // Color the bar by overall utilization
         let avg_util: f64 = cores.iter().map(|(_, r)| r.current).sum::<f64>() / cores.len() as f64;
         let bar_color = if avg_util > 80.0 {
-            Color::Red
+            theme.crit
         } else if avg_util > 50.0 {
-            Color::Yellow
+            theme.warn
         } else {
-            Color::Green
+            theme.good
         };
         lines.push(Line::from(vec![
-            Span::styled("Cores: ", Style::default().fg(Color::White)),
+            Span::styled("Cores: ", theme.label_style()),
             Span::styled(bar, Style::default().fg(bar_color)),
         ]));
     }
@@ -294,13 +308,13 @@ fn build_cpu_panel<'a>(
             "Power: ".into()
         };
         lines.push(Line::from(vec![
-            Span::styled(label, Style::default().fg(Color::White)),
+            Span::styled(label, theme.label_style()),
             Span::styled(
                 format!("{:>6.*}{}", prec, reading.current, reading.unit),
-                Style::default().fg(Color::Magenta),
+                theme.power_style(),
             ),
             Span::raw("  "),
-            Span::styled(spark, Style::default().fg(Color::DarkGray)),
+            Span::styled(spark, theme.muted_style()),
         ]));
     }
 
@@ -333,6 +347,7 @@ fn build_thermal_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
     spark_width: usize,
+    theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let mut temps: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
@@ -362,13 +377,13 @@ fn build_thermal_panel<'a>(
                 .unwrap_or_default();
             let prec = format_precision(&r.unit);
             Line::from(vec![
-                Span::styled(format!("{label:<20} "), Style::default().fg(Color::White)),
+                Span::styled(format!("{label:<20} "), theme.label_style()),
                 Span::styled(
                     format!("{:>6.*}{}", prec, r.current, r.unit),
-                    value_style(r),
+                    theme.value_style(r),
                 ),
                 Span::raw(" "),
-                Span::styled(spark, Style::default().fg(Color::DarkGray)),
+                Span::styled(spark, theme.muted_style()),
             ])
         })
         .collect();
@@ -391,7 +406,10 @@ fn is_hsmp_memory_sensor(id: &SensorId) -> bool {
     id.source == "hsmp" && HSMP_MEMORY_SENSORS.contains(&id.sensor.as_str())
 }
 
-fn build_memory_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
+fn build_memory_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
     let mut lines: Vec<Line<'_>> = Vec::new();
 
     // HSMP DDR bandwidth and memory clock
@@ -401,11 +419,11 @@ fn build_memory_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<P
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{:<20} ", truncate_label(&r.label, 20)),
-                Style::default().fg(Color::White),
+                theme.label_style(),
             ),
             Span::styled(
                 format!("{:>7.*}{}", prec, r.current, unit_str),
-                Style::default().fg(Color::Cyan),
+                theme.info_style(),
             ),
         ]));
     }
@@ -418,12 +436,9 @@ fn build_memory_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<P
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{:<20} ", truncate_label(&r.label, 20)),
-                Style::default().fg(Color::White),
+                theme.label_style(),
             ),
-            Span::styled(
-                format!("{:>7.*}W", prec, r.current),
-                Style::default().fg(Color::Magenta),
-            ),
+            Span::styled(format!("{:>7.*}W", prec, r.current), theme.power_style()),
         ]));
     }
 
@@ -446,6 +461,7 @@ fn build_power_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
     spark_width: usize,
+    theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let mut power: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
@@ -477,13 +493,13 @@ fn build_power_panel<'a>(
                 .unwrap_or_default();
             let prec = format_precision(&r.unit);
             Line::from(vec![
-                Span::styled(format!("{label:<20} "), Style::default().fg(Color::White)),
+                Span::styled(format!("{label:<20} "), theme.label_style()),
                 Span::styled(
                     format!("{:>7.*}{}", prec, r.current, r.unit),
-                    Style::default().fg(Color::Magenta),
+                    theme.power_style(),
                 ),
                 Span::raw(" "),
-                Span::styled(spark, Style::default().fg(Color::DarkGray)),
+                Span::styled(spark, theme.muted_style()),
             ])
         })
         .collect();
@@ -499,7 +515,10 @@ fn build_power_panel<'a>(
 // Storage Panel
 // ---------------------------------------------------------------------------
 
-fn build_storage_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
+fn build_storage_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
     let disk_sensors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
         .filter(|(id, _)| id.source == "disk")
@@ -532,12 +551,12 @@ fn build_storage_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<
         .map(|(name, read, write)| {
             let dev = truncate_label(name, 10);
             Line::from(vec![
-                Span::styled(format!("{dev:<10}"), Style::default().fg(Color::White)),
-                Span::styled(" R ", Style::default().fg(Color::Green)),
-                Span::styled(format!("{read:>8.1}"), Style::default().fg(Color::Green)),
-                Span::styled("  W ", Style::default().fg(Color::Red)),
-                Span::styled(format!("{write:>8.1}"), Style::default().fg(Color::Red)),
-                Span::styled(" MB/s", Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{dev:<10}"), theme.label_style()),
+                Span::styled(" R ", theme.good_style()),
+                Span::styled(format!("{read:>8.1}"), theme.good_style()),
+                Span::styled("  W ", theme.crit_style()),
+                Span::styled(format!("{write:>8.1}"), theme.crit_style()),
+                Span::styled(" MB/s", theme.muted_style()),
             ])
         })
         .collect();
@@ -560,7 +579,10 @@ struct NetIfaceData<'a> {
     link_speed_mb: Option<f64>,
 }
 
-fn build_network_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
+fn build_network_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
     let net_sensors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
         .filter(|(id, _)| id.source == "net")
@@ -599,15 +621,15 @@ fn build_network_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<
             let rx_bar = net_bar(d.rx, d.link_speed_mb, BAR_WIDTH);
             let tx_bar = net_bar(d.tx, d.link_speed_mb, BAR_WIDTH);
             Line::from(vec![
-                Span::styled(format!("{iface:<10}"), Style::default().fg(Color::White)),
-                Span::styled(" \u{2193}", Style::default().fg(Color::Green)),
-                Span::styled(format!("{:>7.1}", d.rx), Style::default().fg(Color::Green)),
+                Span::styled(format!("{iface:<10}"), theme.label_style()),
+                Span::styled(" \u{2193}", theme.good_style()),
+                Span::styled(format!("{:>7.1}", d.rx), theme.good_style()),
                 Span::raw(" "),
-                Span::styled(rx_bar, Style::default().fg(Color::Green)),
-                Span::styled(" \u{2191}", Style::default().fg(Color::Cyan)),
-                Span::styled(format!("{:>7.1}", d.tx), Style::default().fg(Color::Cyan)),
+                Span::styled(rx_bar, theme.good_style()),
+                Span::styled(" \u{2191}", theme.info_style()),
+                Span::styled(format!("{:>7.1}", d.tx), theme.info_style()),
                 Span::raw(" "),
-                Span::styled(tx_bar, Style::default().fg(Color::Cyan)),
+                Span::styled(tx_bar, theme.info_style()),
             ])
         })
         .collect();
@@ -623,7 +645,10 @@ fn build_network_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<
 // Fans Panel
 // ---------------------------------------------------------------------------
 
-fn build_fans_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
+fn build_fans_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
     let mut fans: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
         .filter(|(_, r)| r.category == SensorCategory::Fan)
@@ -641,8 +666,8 @@ fn build_fans_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Pan
         .map(|(_, r)| {
             let label = truncate_label(&r.label, 20);
             Line::from(vec![
-                Span::styled(format!("{label:<20} "), Style::default().fg(Color::White)),
-                Span::styled(format!("{:>5.0} RPM", r.current), value_style(r)),
+                Span::styled(format!("{label:<20} "), theme.label_style()),
+                Span::styled(format!("{:>5.0} RPM", r.current), theme.value_style(r)),
             ])
         })
         .collect();
@@ -658,7 +683,10 @@ fn build_fans_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Pan
 // Platform (HSMP) Panel
 // ---------------------------------------------------------------------------
 
-fn build_platform_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
+fn build_platform_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
     // DDR bandwidth and memory clock are shown in the Memory panel.
     let hsmp: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
@@ -678,11 +706,11 @@ fn build_platform_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option
             Line::from(vec![
                 Span::styled(
                     format!("{:<20} ", truncate_label(&r.label, 20)),
-                    Style::default().fg(Color::White),
+                    theme.label_style(),
                 ),
                 Span::styled(
                     format!("{:>7.*}{}", prec, r.current, unit_str),
-                    Style::default().fg(Color::Cyan),
+                    theme.info_style(),
                 ),
             ])
         })
@@ -699,7 +727,10 @@ fn build_platform_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option
 // Errors Panel (EDAC / AER / MCE)
 // ---------------------------------------------------------------------------
 
-fn build_errors_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<Panel<'a>> {
+fn build_errors_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
     let errors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
         .filter(|(id, r)| {
@@ -725,11 +756,9 @@ fn build_errors_panel<'a>(snapshot: &'a [(SensorId, SensorReading)]) -> Option<P
     let lines = vec![Line::from(vec![
         Span::styled(
             format!("\u{26a0} {total:.0} total errors"),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            theme.warn_style().add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("  ({detail})"), Style::default().fg(Color::Yellow)),
+        Span::styled(format!("  ({detail})"), theme.warn_style()),
     ])];
 
     Some(Panel {
