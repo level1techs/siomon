@@ -26,6 +26,7 @@ pub struct TuiTheme {
     pub search_active_bg: Color,
     pub search_inactive_fg: Color,
     pub search_inactive_bg: Color,
+    pub header_bg: Color,
 }
 
 impl Default for TuiTheme {
@@ -53,6 +54,7 @@ impl Default for TuiTheme {
             search_active_bg: Color::Yellow,
             search_inactive_fg: Color::Yellow,
             search_inactive_bg: Color::Gray,
+            header_bg: Color::Gray,
         }
     }
 }
@@ -82,6 +84,7 @@ impl TuiTheme {
             search_active_bg: Color::Blue,
             search_inactive_fg: Color::Blue,
             search_inactive_bg: Color::DarkGray,
+            header_bg: Color::DarkGray,
         }
     }
 
@@ -89,7 +92,7 @@ impl TuiTheme {
         Self {
             border: Color::White,
             muted: Color::White,
-            cursor_bg: Color::White,
+            cursor_bg: Color::DarkGray,
             accent: Color::LightCyan,
             label: Color::White,
             source: Color::LightYellow,
@@ -104,11 +107,12 @@ impl TuiTheme {
             status_fg: Color::White,
             status_bg: Color::Reset,
             alert_fg: Color::LightYellow,
-            alert_bg: Color::White,
+            alert_bg: Color::DarkGray,
             search_active_fg: Color::Black,
             search_active_bg: Color::LightYellow,
             search_inactive_fg: Color::LightYellow,
-            search_inactive_bg: Color::White,
+            search_inactive_bg: Color::DarkGray,
+            header_bg: Color::DarkGray,
         }
     }
 
@@ -136,6 +140,7 @@ impl TuiTheme {
             search_active_bg: Color::Reset,
             search_inactive_fg: Color::Reset,
             search_inactive_bg: Color::Reset,
+            header_bg: Color::Reset,
         }
     }
 

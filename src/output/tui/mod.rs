@@ -936,7 +936,7 @@ fn draw(
         ])
         .height(1)
         .bottom_margin(1)
-        .style(Style::default().bg(ctx.theme.border));
+        .style(Style::default().bg(ctx.theme.header_bg));
 
         // Apply cursor highlight and scrolling
         let visible_rows: Vec<Row> = rows
