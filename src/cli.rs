@@ -126,7 +126,7 @@ impl Cli {
 
     /// Check if an argument was explicitly set on the command line (not just a default).
     /// Recursive to handle global arguments placed after subcommands.
-    fn is_explicitly_set(&self, id: &str, matches: &clap::ArgMatches) -> bool {
+    pub fn is_explicitly_set(&self, id: &str, matches: &clap::ArgMatches) -> bool {
         use clap::parser::ValueSource;
 
         if matches

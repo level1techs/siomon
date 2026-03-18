@@ -6,13 +6,13 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::Terminal;
 
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::sensors::poller::PollStatsState;
@@ -170,7 +170,7 @@ fn run_loop(
     let mut active_alerts: Vec<String> = Vec::new();
 
     // View mode
-    let mut view_mode = ViewMode::Tree;
+    let mut view_mode = ViewMode::Dashboard;
 
     // Search/filter state
     let mut filter_mode = false;

@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use chrono::Utc;
 use clap::{CommandFactory, FromArgMatches};
 
@@ -17,6 +19,16 @@ fn main() {
     let board_name = db::sensor_labels::read_board_name();
     let label_overrides =
         db::sensor_labels::load_labels(board_name.as_deref(), &config.sensor_labels);
+
+    // Default to TUI when running interactively with no subcommand
+    #[cfg(feature = "tui")]
+    if !cli.tui
+        && cli.command.is_none()
+        && std::io::stdout().is_terminal()
+        && !cli.is_explicitly_set("format", &matches)
+    {
+        cli.tui = true;
+    }
 
     // TUI monitor mode
     if cli.tui {
