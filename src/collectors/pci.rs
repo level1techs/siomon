@@ -95,7 +95,15 @@ fn parse_proc_interrupts() -> HashMap<String, Vec<ParsedIrq>> {
         Ok(c) => c,
         Err(_) => return HashMap::new(),
     };
+    parse_interrupts_str(&content)
+}
 
+/// Try each prefix; return the remainder of the first match.
+fn strip_any_prefix<'a>(s: &'a str, prefixes: &[&str]) -> Option<&'a str> {
+    prefixes.iter().find_map(|p| s.strip_prefix(p))
+}
+
+fn parse_interrupts_str(content: &str) -> HashMap<String, Vec<ParsedIrq>> {
     let mut map: HashMap<String, Vec<ParsedIrq>> = HashMap::new();
     let mut lines = content.lines();
 
@@ -125,13 +133,15 @@ fn parse_proc_interrupts() -> HashMap<String, Vec<ParsedIrq>> {
 
         let type_field = parts[cpu_count + 1];
 
-        let (mode, pci_addr) = if let Some(addr) = type_field.strip_prefix("PCI-MSIX-") {
-            ("MSI-X".to_string(), addr.to_string())
-        } else if let Some(addr) = type_field.strip_prefix("PCI-MSI-") {
-            ("MSI".to_string(), addr.to_string())
-        } else {
-            continue;
-        };
+        // Match PCI-MSI/MSIX with optional IR- prefix (Intel IOMMU remapping)
+        let (mode, pci_addr) =
+            if let Some(addr) = strip_any_prefix(type_field, &["PCI-MSIX-", "IR-PCI-MSIX-"]) {
+                ("MSI-X".to_string(), addr.to_string())
+            } else if let Some(addr) = strip_any_prefix(type_field, &["PCI-MSI-", "IR-PCI-MSI-"]) {
+                ("MSI".to_string(), addr.to_string())
+            } else {
+                continue;
+            };
 
         let trigger_field = parts.get(cpu_count + 2).unwrap_or(&"");
         let trigger = trigger_field
@@ -363,5 +373,76 @@ mod tests {
     fn test_pcie_speed_to_gen_unknown() {
         assert_eq!(pcie_speed_to_gen("unknown"), None);
         assert_eq!(pcie_speed_to_gen("Unknown"), None);
+    }
+
+    #[test]
+    fn test_parse_interrupts_msi() {
+        let input = "\
+                   CPU0       CPU1
+  29:          0       1316  PCI-MSI-0000:f0:01.1    0-edge      PCIe PME aerdrv
+  30:          2          0  PCI-MSI-0000:f0:07.1    0-edge      PCIe PME
+";
+        let map = parse_interrupts_str(input);
+        assert_eq!(map.len(), 2);
+
+        let dev = &map["0000:f0:01.1"];
+        assert_eq!(dev.len(), 1);
+        assert_eq!(dev[0].irq, 29);
+        assert_eq!(dev[0].count, 1316);
+        assert_eq!(dev[0].mode, "MSI");
+        assert_eq!(dev[0].trigger, "edge");
+        assert!(dev[0].handler.contains("PCIe PME"));
+    }
+
+    #[test]
+    fn test_parse_interrupts_msix_multi_vector() {
+        let input = "\
+                   CPU0       CPU1
+  90:       1000       2000  PCI-MSIX-0000:21:00.0    0-edge      nvme1q0
+ 212:        500        500  PCI-MSIX-0000:21:00.0    1-edge      nvme1q1
+";
+        let map = parse_interrupts_str(input);
+        let dev = &map["0000:21:00.0"];
+        assert_eq!(dev.len(), 2);
+        assert_eq!(dev[0].count, 3000);
+        assert_eq!(dev[1].count, 1000);
+        assert_eq!(dev[0].handler, "nvme1q0");
+        assert_eq!(dev[1].handler, "nvme1q1");
+
+        let info = build_interrupt_info("0000:21:00.0", &map).unwrap();
+        assert_eq!(info.mode, "MSI-X");
+        assert_eq!(info.vectors.len(), 2);
+        assert_eq!(info.total_count, 4000);
+    }
+
+    #[test]
+    fn test_parse_interrupts_ir_prefix() {
+        let input = "\
+                   CPU0
+  42:       5000  IR-PCI-MSI-0000:00:1f.0    0-edge      i801_smbus
+  43:       3000  IR-PCI-MSIX-0000:02:00.0    0-edge      eth0
+";
+        let map = parse_interrupts_str(input);
+        assert_eq!(map["0000:00:1f.0"][0].mode, "MSI");
+        assert_eq!(map["0000:02:00.0"][0].mode, "MSI-X");
+    }
+
+    #[test]
+    fn test_parse_interrupts_skips_non_pci() {
+        let input = "\
+                   CPU0
+ NMI:          5   Non-maskable interrupts
+ LOC:    1234567   Local timer interrupts
+  42:       5000  PCI-MSI-0000:00:1f.0    0-edge      device
+";
+        let map = parse_interrupts_str(input);
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("0000:00:1f.0"));
+    }
+
+    #[test]
+    fn test_parse_interrupts_empty() {
+        let map = parse_interrupts_str("");
+        assert!(map.is_empty());
     }
 }
