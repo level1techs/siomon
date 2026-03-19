@@ -24,8 +24,34 @@ pub struct PciDevice {
     pub numa_node: Option<i32>,
     pub pcie_link: Option<PcieLinkInfo>,
     pub enabled: bool,
+    /// Interrupt information from /proc/interrupts.
+    pub interrupts: Option<InterruptInfo>,
     /// AER (Advanced Error Reporting) error counters.
     pub aer: Option<AerCounters>,
+}
+
+/// Per-PCI-device interrupt information parsed from /proc/interrupts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterruptInfo {
+    /// Interrupt type: "MSI", "MSI-X".
+    pub mode: String,
+    /// Trigger mode: "edge" or "level".
+    pub trigger: String,
+    /// Per-vector breakdown.
+    pub vectors: Vec<IrqVector>,
+    /// Total interrupt count across all vectors and CPUs.
+    pub total_count: u64,
+}
+
+/// A single interrupt vector (one line in /proc/interrupts).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrqVector {
+    /// Linux IRQ number.
+    pub irq: u32,
+    /// Total interrupt count (sum across all CPUs).
+    pub count: u64,
+    /// Handler name (e.g., "nvidia", "nvme0q0").
+    pub handler: String,
 }
 
 /// PCIe AER error counters from sysfs aer_dev_* files.

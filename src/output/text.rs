@@ -489,10 +489,9 @@ pub fn print_section_pcie(info: &SystemInfo) {
         pcie_devices.len()
     );
     println!(
-        "  {:<14} {:<40} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6}",
-        "Address", "Device", "CGen", "CWid", "MGen", "MWid", "NUMA", "AER"
+        "  {:<14} {:<40} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>10} {:>6}",
+        "Address", "Device", "CGen", "CWid", "MGen", "MWid", "NUMA", "AER", "IRQ", "Count"
     );
-    println!("  {}", "─".repeat(84));
 
     for dev in &pcie_devices {
         let link = dev.pcie_link.as_ref().unwrap();
@@ -540,10 +539,46 @@ pub fn print_section_pcie(info: &SystemInfo) {
 
         let driver = dev.driver.as_deref().unwrap_or("-");
 
+        let (irq_mode, irq_count) = match &dev.interrupts {
+            Some(info) => {
+                let nvec = info.vectors.len();
+                let mode = if nvec > 1 {
+                    format!("{} x{nvec}", info.mode)
+                } else {
+                    info.mode.clone()
+                };
+                (mode, format_count(info.total_count))
+            }
+            None => ("-".into(), "-".into()),
+        };
+
         println!(
-            "  {:<14} {:<40} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6}  ({})",
-            dev.address, name_trunc, cur_gen, cur_wid, max_gen, max_wid, numa, aer, driver
+            "  {:<14} {:<40} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>10} {:>6}  ({})",
+            dev.address,
+            name_trunc,
+            cur_gen,
+            cur_wid,
+            max_gen,
+            max_wid,
+            numa,
+            aer,
+            irq_mode,
+            irq_count,
+            driver
         );
+    }
+}
+
+/// Format a large count with SI suffix (K, M, G).
+fn format_count(n: u64) -> String {
+    if n >= 999_950_000 {
+        format!("{:.0}G", n as f64 / 1_000_000_000.0)
+    } else if n >= 999_950 {
+        format!("{:.0}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.0}K", n as f64 / 1_000.0)
+    } else {
+        format!("{n}")
     }
 }
 
