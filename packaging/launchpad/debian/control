@@ -1,0 +1,22 @@
+Source: siomon
+Section: utils
+Priority: optional
+Maintainer: Level1Techs Package Team <level1techspackageteam@gmail.com>
+Build-Depends: debhelper-compat (= 13), cargo, rustc (>= 1.85)
+Standards-Version: 4.6.2
+Homepage: https://github.com/level1techs/siomon
+Vcs-Git: https://git.launchpad.net/siomon
+Rules-Requires-Root: no
+
+Package: siomon
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Linux hardware information and sensor monitoring tool
+ siomon provides comprehensive Linux hardware information and real-time
+ sensor monitoring as a single static binary. It supports detailed hardware
+ inventory (CPU, GPU, memory, storage, motherboard, network) and real-time
+ sensor monitoring with an interactive terminal interface.
+ .
+ Output formats include text, JSON, XML, HTML, and CSV. The tool gracefully
+ degrades when not running as root and has zero mandatory runtime
+ dependencies.

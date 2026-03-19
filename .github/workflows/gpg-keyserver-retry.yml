@@ -1,0 +1,72 @@
+name: GPG Keyserver Retry
+
+# No cron — only runs when explicitly dispatched by publish-ppa.yml
+# or by self-dispatch during active retries. The gpg-retry-delay
+# environment must have a 20-minute wait timer configured (one-time
+# setup in repo Settings → Environments).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  retry:
+    name: Check GPG keyserver
+    environment: gpg-retry-delay
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for pending retry
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RETRY_JSON=$(gh variable get PPA_GPG_RETRY --repo "$GITHUB_REPOSITORY" --json value -q '.value' 2>/dev/null || echo "")
+          if [ -z "$RETRY_JSON" ]; then
+            echo "==> No pending GPG keyserver retry."
+            exit 0
+          fi
+
+          echo "retry_json=$RETRY_JSON" >> "$GITHUB_OUTPUT"
+
+          # Enforce 6-hour timeout
+          STARTED_AT=$(echo "$RETRY_JSON" | jq -r '.started_at')
+          NOW=$(date +%s)
+          ELAPSED=$(( NOW - STARTED_AT ))
+          if [ "$ELAPSED" -gt 21600 ]; then
+            echo "::error::GPG key propagation timed out after 6 hours. Delete PPA_GPG_RETRY variable and re-run publish-ppa manually."
+            gh variable delete PPA_GPG_RETRY --repo "$GITHUB_REPOSITORY" || true
+            exit 1
+          fi
+
+          REMAINING=$(( (21600 - ELAPSED) / 60 ))
+          echo "==> Retry pending (${REMAINING}m until timeout)"
+
+      - name: Check keyserver and dispatch
+        if: steps.state.outputs.retry_json != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RETRY_JSON='${{ steps.state.outputs.retry_json }}'
+          GPG_FINGERPRINT=$(echo "$RETRY_JSON" | jq -r '.gpg_fingerprint')
+          TAG=$(echo "$RETRY_JSON" | jq -r '.tag')
+          SERIES=$(echo "$RETRY_JSON" | jq -r '.series')
+          PPA=$(echo "$RETRY_JSON" | jq -r '.ppa')
+          UPLOAD=$(echo "$RETRY_JSON" | jq -r '.upload')
+
+          sudo apt-get update -qq && sudo apt-get install -y -qq gpg >/dev/null
+
+          if gpg --batch --keyserver hkp://keyserver.ubuntu.com --recv-keys "$GPG_FINGERPRINT" 2>/dev/null; then
+            echo "==> GPG key $GPG_FINGERPRINT is now available on keyserver.ubuntu.com!"
+
+            gh variable delete PPA_GPG_RETRY --repo "$GITHUB_REPOSITORY"
+
+            echo "==> Dispatching PPA publish workflow..."
+            gh workflow run publish-ppa.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              -f tag="$TAG" \
+              -f series="$SERIES" \
+              -f ppa="$PPA" \
+              -f upload="$UPLOAD"
+          else
+            echo "==> GPG key $GPG_FINGERPRINT still not available. Scheduling next check..."
+            gh workflow run gpg-keyserver-retry.yml --repo "$GITHUB_REPOSITORY"
+          fi

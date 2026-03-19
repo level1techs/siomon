@@ -78,3 +78,30 @@ jobs:
         with:
           generate_release_notes: true
           files: artifacts/**/*.tar.gz
+
+  publish-aur:
+    name: Publish to AUR
+    needs: [github-release]
+    uses: ./.github/workflows/publish-aur.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      PKG_GIT_NAME: ${{ secrets.PKG_GIT_NAME }}
+      PKG_GIT_EMAIL: ${{ secrets.PKG_GIT_EMAIL }}
+
+  publish-ppa:
+    name: Publish to PPA
+    needs: [github-release]
+    uses: ./.github/workflows/publish-ppa.yml
+    with:
+      tag: ${{ github.ref_name }}
+      upload: true
+    secrets:
+      PKG_GPG_PRIVATE_KEY: ${{ secrets.PKG_GPG_PRIVATE_KEY }}
+      PKG_GPG_PASSPHRASE: ${{ secrets.PKG_GPG_PASSPHRASE }}
+      PKG_GPG_KEY_ID: ${{ secrets.PKG_GPG_KEY_ID }}
+      PKG_GIT_NAME: ${{ secrets.PKG_GIT_NAME }}
+      PKG_GIT_EMAIL: ${{ secrets.PKG_GIT_EMAIL }}
+      LAUNCHPAD_SSH_PRIVATE_KEY: ${{ secrets.LAUNCHPAD_SSH_PRIVATE_KEY }}
+      LAUNCHPAD_LOGIN: ${{ secrets.LAUNCHPAD_LOGIN }}

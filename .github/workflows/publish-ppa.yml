@@ -1,0 +1,370 @@
+name: Publish to PPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to build (e.g., v0.3.0)'
+        required: true
+        type: string
+      series:
+        description: 'Space-separated Ubuntu series to target'
+        required: false
+        default: 'noble questing'
+        type: string
+      ppa:
+        description: 'Target PPA (e.g., ppa:user/name)'
+        required: false
+        default: 'ppa:level1techs/siomon'
+        type: string
+      upload:
+        description: 'Upload to PPA after building'
+        required: false
+        default: true
+        type: boolean
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      series:
+        required: false
+        default: 'noble questing'
+        type: string
+      ppa:
+        required: false
+        default: 'ppa:level1techs/siomon'
+        type: string
+      upload:
+        required: false
+        default: true
+        type: boolean
+    secrets:
+      PKG_GPG_PRIVATE_KEY:
+        required: true
+      PKG_GPG_PASSPHRASE:
+        required: false
+      PKG_GPG_KEY_ID:
+        required: true
+      PKG_GIT_NAME:
+        required: true
+      PKG_GIT_EMAIL:
+        required: true
+      LAUNCHPAD_SSH_PRIVATE_KEY:
+        required: true
+      LAUNCHPAD_LOGIN:
+        required: true
+
+env:
+  UPSTREAM_REPO: https://github.com/level1techs/siomon.git
+
+jobs:
+  publish:
+    name: Build and publish to PPA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y devscripts debhelper fakeroot dput gpg jq cargo rustc
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch current PPA versions and compute version variables
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+          PPA: ${{ inputs.ppa }}
+        run: |
+          UPSTREAM_VERSION="${TAG#v}"
+
+          # Parse PPA path
+          PPA_PATH="${PPA#ppa:}"
+          PPA_USER="${PPA_PATH%%/*}"
+          PPA_NAME="${PPA_PATH#*/}"
+
+          echo "==> Querying Launchpad for published siomon versions..."
+          ALL_VERSIONS=$(curl -sL "https://api.launchpad.net/1.0/~${PPA_USER}/+archive/ubuntu/${PPA_NAME}?ws.op=getPublishedSources&source_name=siomon&ws.size=300" \
+            | jq -r '.entries[]?.source_package_version // empty')
+
+          # Find highest repack and revision for this upstream version
+          FOUND=0
+          MAX_REPACK=0
+          MAX_REV=0
+          for ver in $ALL_VERSIONS; do
+            # Version format: {upstream}+ds{repack}-0ppa{revision}~{series}1
+            VER_BASE="${ver%%~*}"
+            if echo "$VER_BASE" | grep -q -- "-0ppa"; then
+              VER_PKG="${VER_BASE%-0ppa*}"
+              VER_REV="${VER_BASE##*-0ppa}"
+              # Extract upstream and repack from the package version
+              VER_UPSTREAM="${VER_PKG%%+ds*}"
+              if [ "$VER_UPSTREAM" = "$UPSTREAM_VERSION" ]; then
+                FOUND=1
+                VER_REPACK="${VER_PKG##*+ds}"
+                if [ "$VER_REPACK" -gt "$MAX_REPACK" ] 2>/dev/null; then
+                  MAX_REPACK="$VER_REPACK"
+                  MAX_REV="$VER_REV"
+                elif [ "$VER_REPACK" -eq "$MAX_REPACK" ] 2>/dev/null && [ "$VER_REV" -gt "$MAX_REV" ] 2>/dev/null; then
+                  MAX_REV="$VER_REV"
+                fi
+              fi
+            fi
+          done
+
+          if [ "$FOUND" -eq 0 ]; then
+            # New upstream version — first repack
+            NEW_REPACK=1
+          else
+            # Same upstream version already published — increment repack for a fresh tarball
+            NEW_REPACK=$((MAX_REPACK + 1))
+          fi
+          NEW_REV=1
+
+          PKG_VERSION="${UPSTREAM_VERSION}+ds${NEW_REPACK}"
+          ORIG_TARBALL="siomon_${PKG_VERSION}.orig.tar.gz"
+
+          WORK_DIR=$(mktemp -d)
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "    No existing versions found for $UPSTREAM_VERSION"
+          else
+            echo "    Highest existing: +ds${MAX_REPACK}-0ppa${MAX_REV}"
+          fi
+          echo "    Using: +ds${NEW_REPACK}-0ppa${NEW_REV}"
+          echo "==> Version: $UPSTREAM_VERSION, Package: $PKG_VERSION, Revision: $NEW_REV"
+
+          echo "upstream_version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "orig_tarball=$ORIG_TARBALL" >> "$GITHUB_OUTPUT"
+          echo "work_dir=$WORK_DIR" >> "$GITHUB_OUTPUT"
+          echo "revision=$NEW_REV" >> "$GITHUB_OUTPUT"
+
+      - name: Clone upstream and vendor dependencies
+        env:
+          TAG: ${{ inputs.tag }}
+          UPSTREAM_VERSION: ${{ steps.version.outputs.upstream_version }}
+          PKG_VERSION: ${{ steps.version.outputs.pkg_version }}
+          ORIG_TARBALL: ${{ steps.version.outputs.orig_tarball }}
+          WORK_DIR: ${{ steps.version.outputs.work_dir }}
+        run: |
+          echo "==> Cloning $UPSTREAM_REPO at tag $TAG..."
+          git clone --depth 1 --branch "$TAG" "$UPSTREAM_REPO" "$WORK_DIR/siomon-${UPSTREAM_VERSION}"
+          rm -rf "$WORK_DIR/siomon-${UPSTREAM_VERSION}/.git"
+          cd "$WORK_DIR/siomon-${UPSTREAM_VERSION}"
+
+          echo "==> Vendoring dependencies..."
+          cargo fetch --locked --target x86_64-unknown-linux-gnu
+          cargo vendor vendor
+
+          # Remove prebuilt Windows binaries and libraries,
+          # then update cargo checksums to match
+          find vendor -name "*.dll" -delete
+          find vendor -path "*/winapi-i686-pc-windows-gnu/lib/*.a" -delete
+          find vendor -path "*/winapi-x86_64-pc-windows-gnu/lib/*.a" -delete
+          for ck in vendor/*/.cargo-checksum.json; do
+            jq --arg dll .dll --arg a .a \
+              '.files |= with_entries(select(.key | (endswith($dll) or endswith($a)) | not))' \
+              "$ck" > "$ck.tmp" && mv "$ck.tmp" "$ck"
+          done
+
+          # Configure cargo to use vendored sources
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<EOF
+          [source.crates-io]
+          replace-with = "vendored-sources"
+
+          [source.vendored-sources]
+          directory = "vendor"
+          EOF
+
+          # Rename source dir to match package version (includes +dsN suffix)
+          if [ "${UPSTREAM_VERSION}" != "${PKG_VERSION}" ]; then
+            mv "$WORK_DIR/siomon-${UPSTREAM_VERSION}" "$WORK_DIR/siomon-${PKG_VERSION}"
+          fi
+
+          # Create orig tarball
+          echo "==> Creating ${ORIG_TARBALL}..."
+          tar -czf "$WORK_DIR/${ORIG_TARBALL}" -C "$WORK_DIR" "siomon-${PKG_VERSION}"
+
+      - name: Build source packages
+        env:
+          TAG: ${{ inputs.tag }}
+          UPSTREAM_VERSION: ${{ steps.version.outputs.upstream_version }}
+          PKG_VERSION: ${{ steps.version.outputs.pkg_version }}
+          ORIG_TARBALL: ${{ steps.version.outputs.orig_tarball }}
+          WORK_DIR: ${{ steps.version.outputs.work_dir }}
+          REVISION: ${{ steps.version.outputs.revision }}
+          SERIES: ${{ inputs.series }}
+          PKG_GIT_NAME: ${{ secrets.PKG_GIT_NAME }}
+          PKG_GIT_EMAIL: ${{ secrets.PKG_GIT_EMAIL }}
+        run: |
+          export DEBEMAIL="$PKG_GIT_EMAIL"
+          export DEBFULLNAME="$PKG_GIT_NAME"
+
+          for series in $SERIES; do
+            DEB_VERSION="${PKG_VERSION}-0ppa${REVISION}~${series}1"
+            echo "==> Building source package for ${series} (${DEB_VERSION})..."
+
+            # Determine series-specific Rust packages
+            case "$series" in
+              noble)
+                RUST_PKGS="cargo-1.85, rustc-1.85"
+                CARGO_BIN="cargo-1.85"
+                ;;
+              *)
+                RUST_PKGS="cargo, rustc"
+                CARGO_BIN="cargo"
+                ;;
+            esac
+
+            # Extract orig tarball into series-specific build dir
+            BUILD_DIR="$WORK_DIR/build-${series}"
+            mkdir -p "$BUILD_DIR"
+            tar -xzf "$WORK_DIR/${ORIG_TARBALL}" -C "$BUILD_DIR" --strip-components=1
+
+            # Copy debian/ from packaging templates
+            cp -r "$GITHUB_WORKSPACE/packaging/launchpad/debian" "$BUILD_DIR/debian"
+
+            # Write series-specific changelog
+            cat > "$BUILD_DIR/debian/changelog" <<CLEOF
+          siomon (${DEB_VERSION}) ${series}; urgency=medium
+
+            * PPA release of siomon v${UPSTREAM_VERSION}.
+            * Linux hardware information and sensor monitoring tool.
+
+           -- ${PKG_GIT_NAME} <${PKG_GIT_EMAIL}>  $(date -R)
+          CLEOF
+
+            # Adjust Build-Depends for series
+            sed -i "s/Build-Depends: debhelper-compat (= 13), cargo, rustc (>= 1.85)/Build-Depends: debhelper-compat (= 13), ${RUST_PKGS}/" \
+              "$BUILD_DIR/debian/control"
+
+            # Adjust cargo binary name in rules
+            sed -i "s|cargo build|${CARGO_BIN} build|; s|cargo clean|${CARGO_BIN} clean|" \
+              "$BUILD_DIR/debian/rules"
+
+            # Build unsigned source package (orig tarball is already in $WORK_DIR which is ..)
+            cd "$BUILD_DIR"
+            debuild -S -sa -d -us -uc
+          done
+
+      - name: Sign source packages
+        env:
+          PKG_GPG_PRIVATE_KEY: ${{ secrets.PKG_GPG_PRIVATE_KEY }}
+          PKG_GPG_PASSPHRASE: ${{ secrets.PKG_GPG_PASSPHRASE }}
+          PKG_GPG_KEY_ID: ${{ secrets.PKG_GPG_KEY_ID }}
+          WORK_DIR: ${{ steps.version.outputs.work_dir }}
+        run: |
+          # Import GPG key and set ultimate trust
+          echo "$PKG_GPG_PRIVATE_KEY" | gpg --batch --import
+          GPG_FINGERPRINT=$(gpg --batch --list-keys --with-colons "$PKG_GPG_KEY_ID" | awk -F: '/^fpr:/ { print $10; exit }')
+          echo "${GPG_FINGERPRINT}:6:" | gpg --batch --import-ownertrust
+
+          # Configure agent for loopback pinentry (non-interactive signing)
+          mkdir -p ~/.gnupg
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpg-connect-agent reloadagent /bye 2>/dev/null || true
+
+          # Build GPG command: use passphrase if provided, otherwise assume no passphrase
+          if [ -n "$PKG_GPG_PASSPHRASE" ]; then
+            PASSPHRASE_FILE=$(mktemp)
+            echo "$PKG_GPG_PASSPHRASE" > "$PASSPHRASE_FILE"
+            chmod 600 "$PASSPHRASE_FILE"
+            GPG_CMD="gpg --batch --pinentry-mode loopback --passphrase-file $PASSPHRASE_FILE"
+          else
+            GPG_CMD="gpg --batch --pinentry-mode loopback"
+          fi
+
+          # Sign all .changes files
+          for f in "$WORK_DIR"/*_source.changes; do
+            echo "==> Signing $f..."
+            debsign -k "$PKG_GPG_KEY_ID" -p "$GPG_CMD" "$f"
+          done
+
+          rm -f "${PASSPHRASE_FILE:-}"
+
+      - name: Ensure GPG key is on Ubuntu keyserver
+        if: inputs.upload == true || inputs.upload == 'true'
+        env:
+          PKG_GPG_KEY_ID: ${{ secrets.PKG_GPG_KEY_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          GPG_FINGERPRINT=$(gpg --batch --list-keys --with-colons "$PKG_GPG_KEY_ID" | awk -F: '/^fpr:/ { print $10; exit }')
+
+          # Check if the key is already retrievable
+          if gpg --batch --keyserver hkp://keyserver.ubuntu.com --recv-keys "$GPG_FINGERPRINT" 2>/dev/null; then
+            echo "==> GPG key $GPG_FINGERPRINT already available on keyserver.ubuntu.com"
+            exit 0
+          fi
+
+          # Publish the key to the keyserver
+          echo "==> GPG key not on keyserver, publishing $GPG_FINGERPRINT..."
+          gpg --keyserver hkp://keyserver.ubuntu.com --send-keys "$GPG_FINGERPRINT"
+
+          # Store retry state and dispatch the retry workflow
+          echo "==> Scheduling GPG keyserver retry workflow..."
+          gh variable set PPA_GPG_RETRY --body "$(jq -cn \
+            --arg fp "$GPG_FINGERPRINT" \
+            --arg tag "${{ inputs.tag }}" \
+            --arg series "${{ inputs.series }}" \
+            --arg ppa "${{ inputs.ppa }}" \
+            --arg upload "${{ inputs.upload }}" \
+            --arg started_at "$(date +%s)" \
+            '{gpg_fingerprint: $fp, tag: $tag, series: $series, ppa: $ppa, upload: $upload, started_at: $started_at}')"
+          gh workflow run gpg-keyserver-retry.yml
+
+          echo "::error::GPG key not yet retrievable on keyserver.ubuntu.com. Retry workflow dispatched — will check every 20 minutes until key propagates (6-hour timeout)."
+          exit 1
+
+      - name: Upload to PPA
+        if: inputs.upload == true || inputs.upload == 'true'
+        env:
+          LAUNCHPAD_SSH_PRIVATE_KEY: ${{ secrets.LAUNCHPAD_SSH_PRIVATE_KEY }}
+          LAUNCHPAD_LOGIN: ${{ secrets.LAUNCHPAD_LOGIN }}
+          PPA: ${{ inputs.ppa }}
+          WORK_DIR: ${{ steps.version.outputs.work_dir }}
+        run: |
+          # Set up SSH
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "$LAUNCHPAD_SSH_PRIVATE_KEY" > ~/.ssh/launchpad_key
+          chmod 600 ~/.ssh/launchpad_key
+          ssh-keyscan ppa.launchpad.net >> ~/.ssh/known_hosts 2>/dev/null
+
+          eval "$(ssh-agent -s)"
+          ssh-add ~/.ssh/launchpad_key
+
+          # Parse PPA path
+          PPA_PATH="${PPA#ppa:}"
+          PPA_USER="${PPA_PATH%%/*}"
+          PPA_NAME="${PPA_PATH#*/}"
+
+          # Write dput config
+          cat > ~/.dput.cf <<DPUTEOF
+          [siomon-ppa]
+          fqdn = ppa.launchpad.net
+          method = sftp
+          incoming = ~${PPA_USER}/ubuntu/${PPA_NAME}/
+          login = ${LAUNCHPAD_LOGIN}
+          allow_unsigned_uploads = 0
+          DPUTEOF
+
+          echo "==> Uploading to ${PPA}..."
+          for f in "$WORK_DIR"/*_source.changes; do
+            echo "Uploading $f..."
+            dput siomon-ppa "$f"
+          done
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppa-source-packages
+          path: |
+            ${{ steps.version.outputs.work_dir }}/*_source.changes
+            ${{ steps.version.outputs.work_dir }}/*.dsc
+            ${{ steps.version.outputs.work_dir }}/*.debian.tar.*
+            ${{ steps.version.outputs.work_dir }}/*.orig.tar.gz
+          if-no-files-found: warn

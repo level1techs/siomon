@@ -1,0 +1,28 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+export CARGO_HOME = $(CURDIR)/debian/.cargo_home
+export RUSTUP_TOOLCHAIN = stable
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+
+override_dh_auto_build:
+	cargo build --frozen --release --all-features
+
+override_dh_auto_test:
+
+override_dh_auto_install:
+	install -D -m 0755 target/release/sio debian/siomon/usr/bin/sio
+
+override_dh_auto_clean:
+	cargo clean 2>/dev/null || true
+	rm -rf $(CARGO_HOME)
+
+override_dh_clean:
+	dh_clean -Xvendor
+
+override_dh_shlibdeps:
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info || true
