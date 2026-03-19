@@ -301,27 +301,70 @@ struct ArmInfo {
 /// On aarch64, /proc/cpuinfo contains fields like "CPU implementer", "CPU part",
 /// "CPU architecture", and "Features". On x86, these fields are absent so this
 /// function returns `None`.
+///
+/// Handles heterogeneous (big.LITTLE) configurations by scanning all cores'
+/// MIDR registers and reporting all distinct core types.
 fn gather_arm_info(first_proc: Option<&HashMap<String, String>>) -> Option<ArmInfo> {
     let proc_entry = first_proc?;
 
-    // Try MIDR_EL1 from sysfs first, fall back to /proc/cpuinfo fields.
-    let (implementer, part, variant, revision) =
-        read_midr_el1().or_else(|| parse_arm_cpuinfo_ids(proc_entry))?;
+    // Scan all cores for distinct MIDR values (heterogeneous big.LITTLE support).
+    let core_types = read_all_midr();
 
-    let codename = cpu_codenames::lookup_arm(implementer, part);
-
-    let implementer_name = arm_implementer_name(implementer);
-    let brand = codename
-        .as_ref()
-        .map(|cn| format!("{} {}", implementer_name, cn))
-        .or_else(|| {
-            Some(format!(
-                "{} (impl 0x{:02x} part 0x{:03x} r{}p{})",
-                implementer_name, implementer, part, variant, revision,
-            ))
+    if core_types.is_empty() {
+        // Fall back to single-core detection from /proc/cpuinfo.
+        let (implementer, part, variant, revision) = parse_arm_cpuinfo_ids(proc_entry)?;
+        let codename = cpu_codenames::lookup_arm(implementer, part);
+        let implementer_name = arm_implementer_name(implementer);
+        let brand = codename
+            .as_ref()
+            .map(|cn| format!("{} {}", implementer_name, cn))
+            .or_else(|| {
+                Some(format!(
+                    "{} (impl 0x{:02x} part 0x{:03x} r{}p{})",
+                    implementer_name, implementer, part, variant, revision,
+                ))
+            });
+        let features_str = proc_entry.get("Features").cloned();
+        let features = parse_arm_features(features_str.as_deref());
+        return Some(ArmInfo {
+            vendor: CpuVendor::Arm,
+            brand,
+            codename,
+            features,
         });
+    }
 
-    // Parse the ARM "Features" line from /proc/cpuinfo.
+    // Build brand and codename from all distinct core types.
+    // Sort by max frequency descending so performance cores appear first.
+    let mut sorted_types: Vec<_> = core_types.iter().collect();
+    sorted_types.sort_by(|a, b| b.max_freq_khz.cmp(&a.max_freq_khz));
+
+    let implementer_name = arm_implementer_name(sorted_types[0].implementer);
+
+    let brand_parts: Vec<String> = sorted_types
+        .iter()
+        .map(|ct| {
+            let name = cpu_codenames::lookup_arm(ct.implementer, ct.part)
+                .unwrap_or_else(|| format!("part 0x{:03x}", ct.part));
+            if core_types.len() > 1 {
+                format!("{name} ({} cores)", ct.count)
+            } else {
+                name
+            }
+        })
+        .collect();
+    let brand = Some(format!("{} {}", implementer_name, brand_parts.join(" + ")));
+
+    let codename_parts: Vec<String> = sorted_types
+        .iter()
+        .filter_map(|ct| cpu_codenames::lookup_arm(ct.implementer, ct.part))
+        .collect();
+    let codename = if codename_parts.is_empty() {
+        None
+    } else {
+        Some(codename_parts.join(" + "))
+    };
+
     let features_str = proc_entry.get("Features").cloned();
     let features = parse_arm_features(features_str.as_deref());
 
@@ -333,7 +376,15 @@ fn gather_arm_info(first_proc: Option<&HashMap<String, String>>) -> Option<ArmIn
     })
 }
 
-/// Read MIDR_EL1 from sysfs and extract implementer, part, variant, revision.
+/// Distinct ARM core type found by scanning MIDR registers.
+struct ArmCoreType {
+    implementer: u32,
+    part: u32,
+    count: u32,
+    max_freq_khz: u64,
+}
+
+/// Read MIDR_EL1 from all CPUs and group by distinct (implementer, part).
 ///
 /// The MIDR_EL1 register layout (64-bit value, upper 32 bits reserved):
 ///   [31:24] Implementer
@@ -341,16 +392,37 @@ fn gather_arm_info(first_proc: Option<&HashMap<String, String>>) -> Option<ArmIn
 ///   [19:16] Architecture
 ///   [15:4]  Primary part number
 ///   [3:0]   Revision
-fn read_midr_el1() -> Option<(u32, u32, u32, u32)> {
-    let midr_path = Path::new("/sys/devices/system/cpu/cpu0/regs/identification/midr_el1");
-    let val = sysfs::read_u64_optional(midr_path)?;
+fn read_all_midr() -> Vec<ArmCoreType> {
+    let cpu_dirs = sysfs::glob_paths("/sys/devices/system/cpu/cpu[0-9]*");
+    let mut type_map: BTreeMap<(u32, u32), (u32, u64)> = BTreeMap::new();
 
-    let implementer = ((val >> 24) & 0xFF) as u32;
-    let variant = ((val >> 20) & 0xF) as u32;
-    let part = ((val >> 4) & 0xFFF) as u32;
-    let revision = (val & 0xF) as u32;
+    for dir in &cpu_dirs {
+        let midr_path = dir.join("regs/identification/midr_el1");
+        let Some(val) = sysfs::read_u64_optional(&midr_path) else {
+            continue;
+        };
 
-    Some((implementer, part, variant, revision))
+        let implementer = ((val >> 24) & 0xFF) as u32;
+        let part = ((val >> 4) & 0xFFF) as u32;
+
+        let max_freq = sysfs::read_u64_optional(&dir.join("cpufreq/cpuinfo_max_freq")).unwrap_or(0);
+
+        let entry = type_map.entry((implementer, part)).or_insert((0, 0));
+        entry.0 += 1;
+        if max_freq > entry.1 {
+            entry.1 = max_freq;
+        }
+    }
+
+    type_map
+        .into_iter()
+        .map(|((implementer, part), (count, max_freq_khz))| ArmCoreType {
+            implementer,
+            part,
+            count,
+            max_freq_khz,
+        })
+        .collect()
 }
 
 /// Parse ARM CPU identification fields from a /proc/cpuinfo entry.
@@ -471,7 +543,14 @@ fn gather_topology() -> CpuTopology {
     }
 
     let packages = package_ids.len().max(1) as u32;
-    let physical_cores = core_ids.len().max(1) as u32;
+    let mut physical_cores = core_ids.len().max(1) as u32;
+
+    // Some platforms (e.g., Tegra) report core_id=0 for all CPUs.
+    // If core_ids gives fewer cores than logical CPUs and SMT is off,
+    // each logical CPU is its own physical core.
+    if max_threads_per_core <= 1 && physical_cores < logical_processors {
+        physical_cores = logical_processors;
+    }
 
     let dies_per_package = die_ids_per_package
         .values()
@@ -580,19 +659,29 @@ struct FrequencyInfo {
 }
 
 fn gather_frequency() -> FrequencyInfo {
-    let cpufreq = Path::new("/sys/devices/system/cpu/cpu0/cpufreq");
+    // Scan all cores to find the true min/max across heterogeneous configs
+    // (e.g., big.LITTLE where performance cores have higher max clocks).
+    let cpu_dirs = sysfs::glob_paths("/sys/devices/system/cpu/cpu[0-9]*/cpufreq");
 
-    let base_clock_mhz =
-        sysfs::read_u64_optional(&cpufreq.join("cpuinfo_min_freq")).map(|khz| khz as f64 / 1000.0);
+    let mut global_min: Option<u64> = None;
+    let mut global_max: Option<u64> = None;
+    let mut scaling_driver: Option<String> = None;
 
-    let boost_clock_mhz =
-        sysfs::read_u64_optional(&cpufreq.join("cpuinfo_max_freq")).map(|khz| khz as f64 / 1000.0);
-
-    let scaling_driver = sysfs::read_string_optional(&cpufreq.join("scaling_driver"));
+    for cpufreq in &cpu_dirs {
+        if let Some(min_khz) = sysfs::read_u64_optional(&cpufreq.join("cpuinfo_min_freq")) {
+            global_min = Some(global_min.map_or(min_khz, |prev: u64| prev.min(min_khz)));
+        }
+        if let Some(max_khz) = sysfs::read_u64_optional(&cpufreq.join("cpuinfo_max_freq")) {
+            global_max = Some(global_max.map_or(max_khz, |prev: u64| prev.max(max_khz)));
+        }
+        if scaling_driver.is_none() {
+            scaling_driver = sysfs::read_string_optional(&cpufreq.join("scaling_driver"));
+        }
+    }
 
     FrequencyInfo {
-        base_clock_mhz,
-        boost_clock_mhz,
+        base_clock_mhz: global_min.map(|khz| khz as f64 / 1000.0),
+        boost_clock_mhz: global_max.map(|khz| khz as f64 / 1000.0),
         scaling_driver,
     }
 }

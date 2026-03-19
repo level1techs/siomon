@@ -60,7 +60,11 @@ impl CachedFile {
             return None;
         }
         let s = self.buf.trim();
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     }
 }
 

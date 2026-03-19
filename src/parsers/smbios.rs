@@ -471,7 +471,11 @@ fn parse_memory_device(data: &[u8], header_len: usize) -> Option<MemoryDeviceEnt
     let rank = if header_len > 0x1B {
         read_u8(data, 0x1B).and_then(|v| {
             let r = v & 0x0F;
-            if r == 0 { None } else { Some(r) }
+            if r == 0 {
+                None
+            } else {
+                Some(r)
+            }
         })
     } else {
         None
@@ -571,14 +575,13 @@ pub fn memory_type_name(code: u8) -> &'static str {
         0x1B => "LPDDR",
         0x1C => "LPDDR2",
         0x1D => "LPDDR3",
-        0x1E => "DDR5",
-        0x1F => "LPDDR4",
-        0x20 => "Logical non-volatile device",
-        0x21 => "HBM",
-        0x22 => "LPDDR5",
-        0x23 => "HBM2",
+        0x1E => "LPDDR4",
+        0x1F => "Logical non-volatile device",
+        0x20 => "HBM",
+        0x21 => "HBM2",
+        0x22 => "DDR5",
+        0x23 => "LPDDR5",
         0x24 => "HBM3",
-        0x25 => "LPDDR5X",
         _ => "Unknown",
     }
 }
@@ -746,7 +749,7 @@ mod tests {
         formatted[1] = 2; // product name
         formatted[2] = 0; // version (none)
         formatted[3] = 0; // serial (none)
-        // UUID at offset 0x08 - 0x04 = 0x04
+                          // UUID at offset 0x08 - 0x04 = 0x04
         formatted[4..20].copy_from_slice(&uuid_bytes);
         // 0x19 - 0x04 = 0x15
         formatted[0x15] = 3; // SKU string idx
@@ -801,13 +804,13 @@ mod tests {
         // Total Width at 0x08 (offset 4)
         formatted[4] = 72;
         formatted[5] = 0; // 72 bits
-        // Data Width at 0x0A (offset 6)
+                          // Data Width at 0x0A (offset 6)
         formatted[6] = 64;
         formatted[7] = 0; // 64 bits
-        // Size at 0x0C (offset 8) = 16384 MB = 16 GiB
+                          // Size at 0x0C (offset 8) = 16384 MB = 16 GiB
         formatted[8] = 0x00;
         formatted[9] = 0x40; // 0x4000 = 16384
-        // Form Factor at 0x0E (offset 10) = DIMM (0x09)
+                             // Form Factor at 0x0E (offset 10) = DIMM (0x09)
         formatted[10] = 0x09;
         // Device Locator at 0x10 (offset 12) = string 1
         formatted[12] = 1;
@@ -818,10 +821,10 @@ mod tests {
         // Type Detail at 0x13 (offset 15) = Synchronous | Unbuffered
         formatted[15] = 0x80; // bit 7 = Synchronous
         formatted[16] = 0x40; // bit 14 (in high byte) = Unbuffered
-        // Speed at 0x15 (offset 17) = 3200 MT/s
+                              // Speed at 0x15 (offset 17) = 3200 MT/s
         formatted[17] = 0x80;
         formatted[18] = 0x0C; // 0x0C80 = 3200
-        // Manufacturer at 0x17 (offset 19) = string 3
+                              // Manufacturer at 0x17 (offset 19) = string 3
         formatted[19] = 3;
         // Serial at 0x18 (offset 20) = string 4
         formatted[20] = 4;
@@ -838,7 +841,7 @@ mod tests {
         // Min Voltage at 0x22 (offset 30) = 1200 mV
         formatted[30] = 0xB0;
         formatted[31] = 0x04; // 0x04B0 = 1200
-        // Max Voltage at 0x24 (offset 32) = 1200 mV
+                              // Max Voltage at 0x24 (offset 32) = 1200 mV
         formatted[32] = 0xB0;
         formatted[33] = 0x04;
         // Configured Voltage at 0x26 (offset 34) = 1200 mV
@@ -934,7 +937,7 @@ mod tests {
             formatted[9] = 0x20; // size high = 8192 MB = 8 GiB
             formatted[10] = 0x09; // DIMM
             formatted[12] = 1; // locator
-            formatted[14] = 0x1E; // DDR5
+            formatted[14] = 0x22; // DDR5
             formatted[17] = 0xC0; // speed low
             formatted[18] = 0x12; // speed high = 0x12C0 = 4800
             formatted[19] = 2; // manufacturer
@@ -971,7 +974,7 @@ mod tests {
         assert_eq!(result.memory_devices.len(), 1);
         let mem = &result.memory_devices[0];
         assert_eq!(mem.size_bytes, 8192u64 * 1024 * 1024);
-        assert_eq!(mem.memory_type, 0x1E); // DDR5
+        assert_eq!(mem.memory_type, 0x22); // DDR5
         assert_eq!(mem.speed_mts, Some(4800));
         assert_eq!(mem.manufacturer.as_deref(), Some("Micron"));
     }
@@ -991,9 +994,10 @@ mod tests {
     #[test]
     fn test_memory_type_name() {
         assert_eq!(memory_type_name(0x1A), "DDR4");
-        assert_eq!(memory_type_name(0x1E), "DDR5");
-        assert_eq!(memory_type_name(0x22), "LPDDR5");
-        assert_eq!(memory_type_name(0x25), "LPDDR5X");
+        assert_eq!(memory_type_name(0x1E), "LPDDR4");
+        assert_eq!(memory_type_name(0x22), "DDR5");
+        assert_eq!(memory_type_name(0x23), "LPDDR5");
+        assert_eq!(memory_type_name(0x24), "HBM3");
         assert_eq!(memory_type_name(0xFF), "Unknown");
     }
 

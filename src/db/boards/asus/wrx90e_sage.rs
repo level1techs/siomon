@@ -1,4 +1,4 @@
-use super::{BoardTemplate, DimmSlotLabel};
+use super::super::{BoardTemplate, DimmSlotLabel, Platform};
 use crate::db::voltage_scaling;
 
 pub static BOARD: BoardTemplate = BoardTemplate {
@@ -6,6 +6,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     exclude_substrings: &[],
     match_any: &[],
     description: "ASUS Pro WS WRX90E-SAGE SE (AMD TRX50, NCT6798D)",
+    platform: Platform::Generic,
 
     // WRX90E has its own label set (not AM5)
     base_labels: None,

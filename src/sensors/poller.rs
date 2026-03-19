@@ -3,10 +3,11 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::db::boards::Platform;
 use crate::model::sensor::{SensorId, SensorReading};
 use crate::sensors::{
-    SensorSource, cpu_freq, cpu_util, disk_activity, gpu_sensors, hwmon, network_stats, rapl,
-    superio,
+    cpu_freq, cpu_util, disk_activity, gpu_sensors, hwmon, network_stats, rapl, superio,
+    SensorSource,
 };
 
 pub type SensorState = Arc<RwLock<HashMap<SensorId, SensorReading>>>;
@@ -35,9 +36,11 @@ pub struct Poller {
     direct_io: bool,
     label_overrides: HashMap<String, String>,
     storage_exclude: Vec<String>,
+    platform: Platform,
 }
 
 impl Poller {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         state: SensorState,
         poll_stats: PollStatsState,
@@ -46,6 +49,7 @@ impl Poller {
         direct_io: bool,
         label_overrides: HashMap<String, String>,
         storage_exclude: Vec<String>,
+        platform: Platform,
     ) -> Self {
         Self {
             state,
@@ -55,6 +59,7 @@ impl Poller {
             direct_io,
             label_overrides,
             storage_exclude,
+            platform,
         }
     }
 
@@ -79,6 +84,7 @@ impl Poller {
             self.direct_io,
             &self.label_overrides,
             &self.storage_exclude,
+            self.platform,
         );
 
         log::info!("Sensor poller started: {} sources", sources.len());
@@ -179,6 +185,7 @@ fn discover_all_sources(
     direct_io: bool,
     label_overrides: &HashMap<String, String>,
     storage_exclude: &[String],
+    platform: Platform,
 ) -> Vec<Box<dyn SensorSource>> {
     use std::thread;
     use std::time::Instant;
@@ -274,6 +281,15 @@ fn discover_all_sources(
             Box::new(super::mce::MceSource::discover()),
         ];
 
+        // Tegra platform sources (devfreq GPU, hardware engines)
+        if platform == Platform::Tegra {
+            let gpu_src = crate::platform::tegra::DevfreqGpuSource::discover();
+            result.push(Box::new(gpu_src));
+            let eng_src = crate::platform::tegra::TegraEngineSource::discover();
+            result.push(Box::new(eng_src));
+            log::info!("Tegra platform detected, added devfreq GPU + engine sources");
+        }
+
         // Collect parallel results — log and skip any that panicked
         result.extend(join_or_log(h_hwmon.join(), "hwmon"));
         result.extend(join_or_log(h_gpu.join(), "gpu"));
@@ -303,8 +319,15 @@ pub fn snapshot(
     direct_io: bool,
     label_overrides: &HashMap<String, String>,
     storage_exclude: &[String],
+    platform: Platform,
 ) -> HashMap<SensorId, SensorReading> {
-    let mut sources = discover_all_sources(no_nvidia, direct_io, label_overrides, storage_exclude);
+    let mut sources = discover_all_sources(
+        no_nvidia,
+        direct_io,
+        label_overrides,
+        storage_exclude,
+        platform,
+    );
 
     // Short sleep for delta-based sources to have meaningful deltas
     thread::sleep(Duration::from_millis(250));

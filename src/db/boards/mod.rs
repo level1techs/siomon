@@ -11,17 +11,23 @@
 //! More-specific boards must come before more-generic ones in `BOARDS`
 //! (first match wins).
 
-mod asrock_wrx90_ws_evo;
-mod asus_crosshair_x670e;
-mod asus_prime_x670e;
-mod asus_proart_x670e;
-mod asus_strix_x670e;
-mod asus_tuf_x670e;
-mod asus_wrx90e_sage;
+mod asrock;
+mod asus;
+mod nvidia;
 
 use std::collections::HashMap;
 
 use crate::db::voltage_scaling::VoltageChannel;
+
+/// Platform hint for enabling platform-specific sensor sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Platform {
+    /// Standard x86/ARM system, no special platform handling.
+    #[default]
+    Generic,
+    /// NVIDIA Tegra (Jetson) — enables devfreq GPU, engine clocks.
+    Tegra,
+}
 
 /// Unified per-board hardware template.
 #[derive(Debug)]
@@ -36,6 +42,8 @@ pub struct BoardTemplate {
     pub match_any: &'static [&'static str],
     /// Human-readable board description for logging.
     pub description: &'static str,
+    /// Platform hint for enabling platform-specific sensor sources.
+    pub platform: Platform,
     /// Board-specific sensor labels (merged on top of `base_labels`).
     pub sensor_labels: &'static [(&'static str, &'static str)],
     /// Optional shared base labels applied first; board labels override.
@@ -71,14 +79,17 @@ pub const ASUS_AM5_NCT6798_LABELS: &[(&str, &str)] = &[
 
 /// All known board templates. First match wins.
 static BOARDS: &[&BoardTemplate] = &[
-    // WRX90E must come before WRX90 (ASRock excludes WRX90E)
-    &asus_wrx90e_sage::BOARD,
-    &asrock_wrx90_ws_evo::BOARD,
-    &asus_crosshair_x670e::BOARD,
-    &asus_strix_x670e::BOARD,
-    &asus_tuf_x670e::BOARD,
-    &asus_prime_x670e::BOARD,
-    &asus_proart_x670e::BOARD,
+    // ASUS — WRX90E must come before ASRock WRX90 (excludes WRX90E)
+    &asus::wrx90e_sage::BOARD,
+    &asrock::wrx90_ws_evo::BOARD,
+    &asus::crosshair_x670e::BOARD,
+    &asus::strix_x670e::BOARD,
+    &asus::tuf_x670e::BOARD,
+    &asus::prime_x670e::BOARD,
+    &asus::proart_x670e::BOARD,
+    // NVIDIA
+    &nvidia::dgx_spark::BOARD,
+    &nvidia::jetson_thor::BOARD,
 ];
 
 /// Look up a board template by DMI board name.
@@ -197,6 +208,20 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_nvidia_dgx_spark() {
+        let b = lookup_board("P4242").unwrap();
+        assert!(b.description.contains("DGX Spark"));
+        assert_eq!(b.platform, Platform::Generic);
+    }
+
+    #[test]
+    fn test_lookup_nvidia_jetson_thor() {
+        let b = lookup_board("Jetson AGX Thor").unwrap();
+        assert!(b.description.contains("Jetson"));
+        assert_eq!(b.platform, Platform::Tegra);
+    }
+
+    #[test]
     fn test_no_ambiguous_matches() {
         let known_boards = [
             "Pro WS WRX90E-SAGE SE",
@@ -209,6 +234,8 @@ mod tests {
             "PRIME X670E-PRO WIFI",
             "PRIME B650-PLUS",
             "ProArt X670E-CREATOR WIFI",
+            "P4242",
+            "Jetson AGX Thor",
         ];
         for name in &known_boards {
             let lower = name.to_lowercase();
@@ -234,6 +261,7 @@ mod tests {
             exclude_substrings: &[],
             match_any: &[],
             description: "test board",
+            platform: Platform::Generic,
             base_labels: Some(&[
                 ("hwmon/nct6798/in0", "Vcore"),
                 ("hwmon/nct6798/fan1", "CPU Fan"),
@@ -256,6 +284,7 @@ mod tests {
             exclude_substrings: &[],
             match_any: &[],
             description: "test board",
+            platform: Platform::Generic,
             base_labels: None,
             sensor_labels: &[("hwmon/nct6798/in0", "Vcore")],
             nct_voltage_scaling: None,

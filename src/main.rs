@@ -18,7 +18,7 @@ fn main() {
 
     // Build sensor label overrides from board name + config file
     let board_name = db::sensor_labels::read_board_name();
-    let label_overrides =
+    let (label_overrides, platform) =
         db::sensor_labels::load_labels(board_name.as_deref(), &config.sensor_labels);
 
     // Default to TUI when running interactively with no subcommand
@@ -33,13 +33,13 @@ fn main() {
 
     // TUI monitor mode
     if cli.tui {
-        run_monitor(&cli, &config, label_overrides);
+        run_monitor(&cli, &config, label_overrides, platform);
         return;
     }
 
     // Sensor snapshot or one-shot commands
     if let Some(Commands::Sensors) = &cli.command {
-        run_sensor_snapshot(&cli, &config, &label_overrides);
+        run_sensor_snapshot(&cli, &config, &label_overrides, platform);
         return;
     }
 
@@ -91,6 +91,7 @@ fn run_monitor(
     cli: &Cli,
     config: &config::SiomonConfig,
     label_overrides: std::collections::HashMap<String, String>,
+    platform: db::boards::Platform,
 ) {
     #[cfg(feature = "tui")]
     {
@@ -105,6 +106,7 @@ fn run_monitor(
             cli.direct_io,
             label_overrides,
             config.general.storage_exclude.clone(),
+            platform,
         );
         let _handle = poller.spawn();
 
@@ -143,7 +145,7 @@ fn run_monitor(
 
     #[cfg(not(feature = "tui"))]
     {
-        let _ = (cli, config, label_overrides);
+        let _ = (cli, config, label_overrides, platform);
         eprintln!("TUI not available — compile with the 'tui' feature");
     }
 }
@@ -152,12 +154,14 @@ fn run_sensor_snapshot(
     cli: &Cli,
     config: &config::SiomonConfig,
     label_overrides: &std::collections::HashMap<String, String>,
+    platform: db::boards::Platform,
 ) {
     let readings = sensors::poller::snapshot(
         cli.no_nvidia,
         cli.direct_io,
         label_overrides,
         &config.general.storage_exclude,
+        platform,
     );
     let mut sorted: Vec<_> = readings.into_iter().collect();
     sorted.sort_by(|a, b| a.0.natural_cmp(&b.0));

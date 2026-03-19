@@ -7,3 +7,4 @@ pub mod procfs;
 pub mod sata_ioctl;
 pub mod sinfo_io;
 pub mod sysfs;
+pub mod tegra;

@@ -84,10 +84,9 @@ fn smbios_memory_type(code: u8) -> MemoryType {
     match code {
         0x18 => MemoryType::DDR3,
         0x1A => MemoryType::DDR4,
-        0x1E => MemoryType::DDR5,
-        0x1F => MemoryType::LPDDR4,
-        0x22 => MemoryType::LPDDR5,
-        0x25 => MemoryType::LPDDR5X,
+        0x1E => MemoryType::LPDDR4,
+        0x22 => MemoryType::DDR5,
+        0x23 => MemoryType::LPDDR5,
         _ => MemoryType::Unknown(smbios::memory_type_name(code).to_string()),
     }
 }

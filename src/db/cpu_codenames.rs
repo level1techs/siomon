@@ -109,9 +109,13 @@ pub fn lookup_arm(implementer: u32, part: u32) -> Option<String> {
         (0x41, 0xd80) => "Cortex-A520",
         (0x41, 0xd81) => "Cortex-A720",
         (0x41, 0xd82) => "Cortex-X4",
+        (0x41, 0xd83) => "Neoverse V3AE",
         (0x41, 0xd84) => "Neoverse V3",
         (0x41, 0xd85) => "Cortex-X925",
         (0x41, 0xd87) => "Cortex-A725",
+        (0x41, 0xd88) => "Cortex-A520AE",
+        (0x41, 0xd89) => "Cortex-A720AE",
+        (0x41, 0xd8e) => "Neoverse N3",
 
         // Apple
         (0x61, 0x022) => "Apple M1 Icestorm",

@@ -1,23 +1,35 @@
 use std::collections::HashMap;
 
-/// Load sensor label overrides. Checks:
+use super::boards::Platform;
+
+/// Load sensor label overrides and detect the board platform. Checks:
 /// 1. Built-in board-specific labels (matched by board name from DMI)
 /// 2. User overrides from config file (these take precedence)
+///
+/// Returns (labels, platform) where platform is from the matched board
+/// template, or falls back to filesystem detection for Tegra.
 pub fn load_labels(
     board_name: Option<&str>,
     user_labels: &HashMap<String, String>,
-) -> HashMap<String, String> {
+) -> (HashMap<String, String>, Platform) {
     let mut labels = HashMap::new();
+    let mut platform = Platform::Generic;
 
     // Built-in board labels via board template
     if let Some(board) = board_name.and_then(super::boards::lookup_board) {
         labels = super::boards::resolve_labels(board);
+        platform = board.platform;
+    }
+
+    // Filesystem fallback: detect Tegra even without a board template match
+    if platform == Platform::Generic && crate::platform::tegra::is_tegra() {
+        platform = Platform::Tegra;
     }
 
     // User labels override built-ins
     labels.extend(user_labels.iter().map(|(k, v)| (k.clone(), v.clone())));
 
-    labels
+    (labels, platform)
 }
 
 /// Read the board name from DMI sysfs.
@@ -33,14 +45,14 @@ mod tests {
 
     #[test]
     fn test_builtin_labels_wrx90e() {
-        let labels = load_labels(Some("Pro WS WRX90E-SAGE SE"), &HashMap::new());
+        let (labels, _) = load_labels(Some("Pro WS WRX90E-SAGE SE"), &HashMap::new());
         assert_eq!(labels.get("hwmon/nct6798/in0").unwrap(), "Vcore");
         assert_eq!(labels.get("hwmon/nct6798/fan7").unwrap(), "AIO Pump");
     }
 
     #[test]
     fn test_builtin_labels_asrock_wrx90() {
-        let labels = load_labels(Some("WRX90 WS EVO"), &HashMap::new());
+        let (labels, _) = load_labels(Some("WRX90 WS EVO"), &HashMap::new());
         assert_eq!(labels.get("hwmon/nct6799/in0").unwrap(), "Vcore");
         assert_eq!(labels.get("hwmon/nct6799/fan1").unwrap(), "CPU Fan 1");
         assert_eq!(labels.get("superio/nct6799/vin0").unwrap(), "Vcore");
@@ -51,7 +63,7 @@ mod tests {
 
     #[test]
     fn test_builtin_labels_crosshair_x670() {
-        let labels = load_labels(Some("ROG CROSSHAIR X670E HERO"), &HashMap::new());
+        let (labels, _) = load_labels(Some("ROG CROSSHAIR X670E HERO"), &HashMap::new());
         assert_eq!(labels.get("hwmon/nct6798/in0").unwrap(), "Vcore");
         assert_eq!(labels.get("hwmon/nct6798/in4").unwrap(), "+12V");
         assert_eq!(labels.get("hwmon/nct6798/fan1").unwrap(), "CPU Fan");
@@ -60,7 +72,7 @@ mod tests {
 
     #[test]
     fn test_builtin_labels_strix_x670e() {
-        let labels = load_labels(Some("ROG STRIX X670E-E GAMING WIFI"), &HashMap::new());
+        let (labels, _) = load_labels(Some("ROG STRIX X670E-E GAMING WIFI"), &HashMap::new());
         assert_eq!(labels.get("hwmon/nct6798/in0").unwrap(), "Vcore");
         assert_eq!(labels.get("hwmon/nct6798/in1").unwrap(), "+5V");
         assert_eq!(labels.get("hwmon/nct6798/fan1").unwrap(), "CPU Fan");
@@ -69,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_builtin_labels_tuf_b650() {
-        let labels = load_labels(Some("TUF GAMING B650-PLUS WIFI"), &HashMap::new());
+        let (labels, _) = load_labels(Some("TUF GAMING B650-PLUS WIFI"), &HashMap::new());
         assert_eq!(labels.get("hwmon/nct6798/in0").unwrap(), "Vcore");
         assert_eq!(labels.get("hwmon/nct6798/fan1").unwrap(), "CPU Fan");
         assert_eq!(labels.get("hwmon/nct6798/fan2").unwrap(), "Chassis Fan 1");
@@ -77,14 +89,14 @@ mod tests {
 
     #[test]
     fn test_builtin_labels_prime_x670e() {
-        let labels = load_labels(Some("PRIME X670E-PRO WIFI"), &HashMap::new());
+        let (labels, _) = load_labels(Some("PRIME X670E-PRO WIFI"), &HashMap::new());
         assert_eq!(labels.get("hwmon/nct6798/in0").unwrap(), "Vcore");
         assert_eq!(labels.get("hwmon/nct6798/fan1").unwrap(), "CPU Fan");
     }
 
     #[test]
     fn test_builtin_labels_unknown_board() {
-        let labels = load_labels(Some("Some Unknown Board"), &HashMap::new());
+        let (labels, _) = load_labels(Some("Some Unknown Board"), &HashMap::new());
         assert!(labels.is_empty());
     }
 
@@ -93,7 +105,7 @@ mod tests {
         let mut user = HashMap::new();
         user.insert("hwmon/nct6798/in0".into(), "My Custom Vcore".into());
 
-        let labels = load_labels(Some("WRX90E-SAGE SE"), &user);
+        let (labels, _) = load_labels(Some("WRX90E-SAGE SE"), &user);
         // User label takes precedence over the built-in "Vcore"
         assert_eq!(labels.get("hwmon/nct6798/in0").unwrap(), "My Custom Vcore");
         // Built-in labels for other sensors still present
@@ -105,7 +117,7 @@ mod tests {
         let mut user = HashMap::new();
         user.insert("hwmon/coretemp/temp1".into(), "CPU Package".into());
 
-        let labels = load_labels(None, &user);
+        let (labels, _) = load_labels(None, &user);
         assert_eq!(labels.len(), 1);
         assert_eq!(labels.get("hwmon/coretemp/temp1").unwrap(), "CPU Package");
     }

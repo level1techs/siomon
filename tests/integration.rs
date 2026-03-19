@@ -219,7 +219,7 @@ fn test_label_loading_with_config_override() {
     let mut user_labels = HashMap::new();
     user_labels.insert("hwmon/nct6798/in0".into(), "My Vcore".into());
 
-    let labels = siomon::db::sensor_labels::load_labels(Some("WRX90E-SAGE SE"), &user_labels);
+    let (labels, _) = siomon::db::sensor_labels::load_labels(Some("WRX90E-SAGE SE"), &user_labels);
 
     // User label overrides builtin
     assert_eq!(labels["hwmon/nct6798/in0"], "My Vcore");
@@ -232,7 +232,7 @@ fn test_label_loading_no_board_user_only() {
     let mut user_labels = HashMap::new();
     user_labels.insert("hwmon/coretemp/temp1".into(), "CPU Package".into());
 
-    let labels = siomon::db::sensor_labels::load_labels(None, &user_labels);
+    let (labels, _) = siomon::db::sensor_labels::load_labels(None, &user_labels);
     assert_eq!(labels.len(), 1);
     assert_eq!(labels["hwmon/coretemp/temp1"], "CPU Package");
 }

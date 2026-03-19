@@ -99,9 +99,9 @@ fn collect_pcie_link(path: &Path) -> Option<PcieLinkInfo> {
     }
 
     Some(PcieLinkInfo {
-        current_gen: current_speed.as_deref().map(pcie_speed_to_gen),
+        current_gen: current_speed.as_deref().and_then(pcie_speed_to_gen),
         current_width,
-        max_gen: max_speed.as_deref().map(pcie_speed_to_gen),
+        max_gen: max_speed.as_deref().and_then(pcie_speed_to_gen),
         max_width,
         current_speed,
         max_speed,
@@ -140,21 +140,36 @@ pub(crate) fn parse_aer_total(path: &Path) -> Option<u64> {
     None
 }
 
-pub fn pcie_speed_to_gen(speed: &str) -> u8 {
-    if speed.contains("64") {
-        6
-    } else if speed.contains("32") {
-        5
-    } else if speed.contains("16") {
-        4
-    } else if speed.contains("8") {
-        3
-    } else if speed.contains("5") {
-        2
-    } else if speed.contains("2.5") {
-        1
-    } else {
-        0
+/// Parse a PCIe speed string like "16.0 GT/s PCIe" into a generation number.
+///
+/// Parses the leading float and maps GT/s to generation. Returns None for
+/// unrecognized or missing values.
+pub(crate) fn pcie_speed_to_gen(speed: &str) -> Option<u8> {
+    let gts: f64 = speed.split_whitespace().next()?.parse().ok()?;
+    match gts as u32 {
+        2 => Some(1),  // 2.5 GT/s rounds to 2
+        5 => Some(2),  // 5.0 GT/s
+        8 => Some(3),  // 8.0 GT/s
+        16 => Some(4), // 16.0 GT/s
+        32 => Some(5), // 32.0 GT/s
+        64 => Some(6), // 64.0 GT/s
+        _ => {
+            if (2.4..2.6).contains(&gts) {
+                Some(1)
+            } else if (4.9..5.1).contains(&gts) {
+                Some(2)
+            } else if (7.9..8.1).contains(&gts) {
+                Some(3)
+            } else if (15.9..16.1).contains(&gts) {
+                Some(4)
+            } else if (31.9..32.1).contains(&gts) {
+                Some(5)
+            } else if (63.9..64.1).contains(&gts) {
+                Some(6)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -220,14 +235,17 @@ mod tests {
 
     #[test]
     fn test_pcie_speed_to_gen() {
-        assert_eq!(pcie_speed_to_gen("8.0 GT/s PCIe"), 3);
-        assert_eq!(pcie_speed_to_gen("16.0 GT/s PCIe"), 4);
-        assert_eq!(pcie_speed_to_gen("32.0 GT/s PCIe"), 5);
-        assert_eq!(pcie_speed_to_gen("64.0 GT/s PCIe"), 6);
+        assert_eq!(pcie_speed_to_gen("2.5 GT/s PCIe"), Some(1));
+        assert_eq!(pcie_speed_to_gen("5.0 GT/s PCIe"), Some(2));
+        assert_eq!(pcie_speed_to_gen("8.0 GT/s PCIe"), Some(3));
+        assert_eq!(pcie_speed_to_gen("16.0 GT/s PCIe"), Some(4));
+        assert_eq!(pcie_speed_to_gen("32.0 GT/s PCIe"), Some(5));
+        assert_eq!(pcie_speed_to_gen("64.0 GT/s PCIe"), Some(6));
     }
 
     #[test]
     fn test_pcie_speed_to_gen_unknown() {
-        assert_eq!(pcie_speed_to_gen("unknown"), 0);
+        assert_eq!(pcie_speed_to_gen("unknown"), None);
+        assert_eq!(pcie_speed_to_gen("Unknown"), None);
     }
 }

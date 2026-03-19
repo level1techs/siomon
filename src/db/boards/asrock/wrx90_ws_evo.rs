@@ -1,10 +1,11 @@
-use super::BoardTemplate;
+use super::super::{BoardTemplate, Platform};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["wrx90"],
     exclude_substrings: &["wrx90e"],
     match_any: &[],
     description: "ASRock WRX90 WS EVO (AMD TRX50, NCT6799D)",
+    platform: Platform::Generic,
 
     base_labels: None,
     sensor_labels: &[

@@ -195,8 +195,10 @@ fn read_pcie_link(device_path: &Path) -> Option<PcieLinkInfo> {
     let max_width = read_string_optional(&device_path.join("max_link_width"))
         .and_then(|s| parse_link_width(&s));
 
-    let current_gen = current_speed.as_deref().and_then(parse_pcie_gen);
-    let max_gen = max_speed.as_deref().and_then(parse_pcie_gen);
+    let current_gen = current_speed
+        .as_deref()
+        .and_then(super::pci::pcie_speed_to_gen);
+    let max_gen = max_speed.as_deref().and_then(super::pci::pcie_speed_to_gen);
 
     if current_speed.is_none()
         && max_speed.is_none()
@@ -214,39 +216,6 @@ fn read_pcie_link(device_path: &Path) -> Option<PcieLinkInfo> {
         current_speed,
         max_speed,
     })
-}
-
-/// Parse a PCIe speed string like "16.0 GT/s PCIe" into a generation number.
-fn parse_pcie_gen(speed: &str) -> Option<u8> {
-    // Extract the GT/s number
-    let gts: f64 = speed.split_whitespace().next()?.parse().ok()?;
-    // Map GT/s to PCIe generation
-    match gts as u32 {
-        2 => Some(1),  // 2.5 GT/s rounds to 2
-        5 => Some(2),  // 5.0 GT/s
-        8 => Some(3),  // 8.0 GT/s
-        16 => Some(4), // 16.0 GT/s
-        32 => Some(5), // 32.0 GT/s
-        64 => Some(6), // 64.0 GT/s
-        _ => {
-            // More precise matching with the float
-            if (2.4..2.6).contains(&gts) {
-                Some(1)
-            } else if (4.9..5.1).contains(&gts) {
-                Some(2)
-            } else if (7.9..8.1).contains(&gts) {
-                Some(3)
-            } else if (15.9..16.1).contains(&gts) {
-                Some(4)
-            } else if (31.9..32.1).contains(&gts) {
-                Some(5)
-            } else if (63.9..64.1).contains(&gts) {
-                Some(6)
-            } else {
-                None
-            }
-        }
-    }
 }
 
 /// Parse link width like "x16" or "16" into a u8.
@@ -387,7 +356,10 @@ fn enrich_nvidia(
     }
 
     if let Ok(mem) = lib.device_memory_info(idx) {
-        info.vram_total_bytes = Some(mem.total);
+        // Unified memory GPUs (e.g., NVIDIA GB10) report 0 for VRAM.
+        if mem.total > 0 {
+            info.vram_total_bytes = Some(mem.total);
+        }
     }
 
     info.max_core_clock_mhz = lib

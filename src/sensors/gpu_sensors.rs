@@ -142,11 +142,19 @@ fn discover_amd() -> Vec<AmdGpu> {
 
         let busy_path = {
             let p = device_path.join("gpu_busy_percent");
-            if p.exists() { Some(p) } else { None }
+            if p.exists() {
+                Some(p)
+            } else {
+                None
+            }
         };
         let vram_used_path = {
             let p = device_path.join("mem_info_vram_used");
-            if p.exists() { Some(p) } else { None }
+            if p.exists() {
+                Some(p)
+            } else {
+                None
+            }
         };
         let vram_total = sysfs::read_u64_optional(&device_path.join("mem_info_vram_total"));
 
@@ -260,13 +268,16 @@ fn poll_nvidia(
         }
 
         if let Ok(mem) = lib.device_memory_info(gpu.index) {
-            let id = sid("nvml", &chip, "vram_used");
-            let label = format!("{} VRAM Used", gpu.name);
-            let mb = mem.used as f64 / (1024.0 * 1024.0);
-            readings.push((
-                id,
-                SensorReading::new(label, mb, SensorUnit::Megabytes, SensorCategory::Memory),
-            ));
+            // Unified memory GPUs (e.g., NVIDIA GB10) report 0 for VRAM total.
+            if mem.total > 0 {
+                let id = sid("nvml", &chip, "vram_used");
+                let label = format!("{} VRAM Used", gpu.name);
+                let mb = mem.used as f64 / (1024.0 * 1024.0);
+                readings.push((
+                    id,
+                    SensorReading::new(label, mb, SensorUnit::Megabytes, SensorCategory::Memory),
+                ));
+            }
         }
     }
 }
