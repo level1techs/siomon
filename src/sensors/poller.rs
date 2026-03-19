@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use crate::db::boards::Platform;
 use crate::model::sensor::{SensorId, SensorReading};
 use crate::sensors::{
-    cpu_freq, cpu_util, disk_activity, gpu_sensors, hwmon, network_stats, rapl, superio,
-    SensorSource,
+    SensorSource, cpu_freq, cpu_util, disk_activity, gpu_sensors, hwmon, network_stats, rapl,
+    superio,
 };
 
 pub type SensorState = Arc<RwLock<HashMap<SensorId, SensorReading>>>;

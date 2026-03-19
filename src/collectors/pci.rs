@@ -146,13 +146,13 @@ pub(crate) fn parse_aer_total(path: &Path) -> Option<u64> {
 /// unrecognized or missing values.
 pub(crate) fn pcie_speed_to_gen(speed: &str) -> Option<u8> {
     let gts: f64 = speed.split_whitespace().next()?.parse().ok()?;
-    match gts as u32 {
-        2 => Some(1),  // 2.5 GT/s rounds to 2
-        5 => Some(2),  // 5.0 GT/s
-        8 => Some(3),  // 8.0 GT/s
-        16 => Some(4), // 16.0 GT/s
-        32 => Some(5), // 32.0 GT/s
-        64 => Some(6), // 64.0 GT/s
+    match gts.round() as u32 {
+        3 | 2 => Some(1), // 2.5 GT/s
+        5 => Some(2),     // 5.0 GT/s
+        8 => Some(3),     // 8.0 GT/s
+        16 => Some(4),    // 16.0 GT/s
+        32 => Some(5),    // 32.0 GT/s
+        64 => Some(6),    // 64.0 GT/s
         _ => {
             if (2.4..2.6).contains(&gts) {
                 Some(1)

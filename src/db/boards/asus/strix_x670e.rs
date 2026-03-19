@@ -1,4 +1,4 @@
-use super::super::{BoardTemplate, Platform, ASUS_AM5_NCT6798_LABELS};
+use super::super::{ASUS_AM5_NCT6798_LABELS, BoardTemplate, Platform};
 use crate::db::voltage_scaling;
 
 pub static BOARD: BoardTemplate = BoardTemplate {

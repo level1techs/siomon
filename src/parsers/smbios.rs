@@ -471,11 +471,7 @@ fn parse_memory_device(data: &[u8], header_len: usize) -> Option<MemoryDeviceEnt
     let rank = if header_len > 0x1B {
         read_u8(data, 0x1B).and_then(|v| {
             let r = v & 0x0F;
-            if r == 0 {
-                None
-            } else {
-                Some(r)
-            }
+            if r == 0 { None } else { Some(r) }
         })
     } else {
         None
@@ -749,7 +745,7 @@ mod tests {
         formatted[1] = 2; // product name
         formatted[2] = 0; // version (none)
         formatted[3] = 0; // serial (none)
-                          // UUID at offset 0x08 - 0x04 = 0x04
+        // UUID at offset 0x08 - 0x04 = 0x04
         formatted[4..20].copy_from_slice(&uuid_bytes);
         // 0x19 - 0x04 = 0x15
         formatted[0x15] = 3; // SKU string idx
@@ -804,13 +800,13 @@ mod tests {
         // Total Width at 0x08 (offset 4)
         formatted[4] = 72;
         formatted[5] = 0; // 72 bits
-                          // Data Width at 0x0A (offset 6)
+        // Data Width at 0x0A (offset 6)
         formatted[6] = 64;
         formatted[7] = 0; // 64 bits
-                          // Size at 0x0C (offset 8) = 16384 MB = 16 GiB
+        // Size at 0x0C (offset 8) = 16384 MB = 16 GiB
         formatted[8] = 0x00;
         formatted[9] = 0x40; // 0x4000 = 16384
-                             // Form Factor at 0x0E (offset 10) = DIMM (0x09)
+        // Form Factor at 0x0E (offset 10) = DIMM (0x09)
         formatted[10] = 0x09;
         // Device Locator at 0x10 (offset 12) = string 1
         formatted[12] = 1;
@@ -821,10 +817,10 @@ mod tests {
         // Type Detail at 0x13 (offset 15) = Synchronous | Unbuffered
         formatted[15] = 0x80; // bit 7 = Synchronous
         formatted[16] = 0x40; // bit 14 (in high byte) = Unbuffered
-                              // Speed at 0x15 (offset 17) = 3200 MT/s
+        // Speed at 0x15 (offset 17) = 3200 MT/s
         formatted[17] = 0x80;
         formatted[18] = 0x0C; // 0x0C80 = 3200
-                              // Manufacturer at 0x17 (offset 19) = string 3
+        // Manufacturer at 0x17 (offset 19) = string 3
         formatted[19] = 3;
         // Serial at 0x18 (offset 20) = string 4
         formatted[20] = 4;
@@ -841,7 +837,7 @@ mod tests {
         // Min Voltage at 0x22 (offset 30) = 1200 mV
         formatted[30] = 0xB0;
         formatted[31] = 0x04; // 0x04B0 = 1200
-                              // Max Voltage at 0x24 (offset 32) = 1200 mV
+        // Max Voltage at 0x24 (offset 32) = 1200 mV
         formatted[32] = 0xB0;
         formatted[33] = 0x04;
         // Configured Voltage at 0x26 (offset 34) = 1200 mV

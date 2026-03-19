@@ -5,7 +5,7 @@
 
 #![cfg(feature = "nvidia")]
 
-use std::ffi::{c_char, c_uint, CStr};
+use std::ffi::{CStr, c_char, c_uint};
 use std::sync::Arc;
 
 use crate::error::NvmlError;

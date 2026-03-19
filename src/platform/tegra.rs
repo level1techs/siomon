@@ -65,11 +65,7 @@ impl DevfreqGpuSource {
 
             let load_path = {
                 let p = entry.join("device/load");
-                if p.exists() {
-                    Some(p)
-                } else {
-                    None
-                }
+                if p.exists() { Some(p) } else { None }
             };
 
             let display_name = of_name.as_deref().unwrap_or("?");
@@ -128,20 +124,17 @@ impl crate::sensors::SensorSource for DevfreqGpuSource {
                 }
             }
 
-            // Max frequency for reference
-            if gpu.max_freq_mhz.is_some() {
-                if let Some(hz) = sysfs::read_u64_optional(&gpu.devfreq_dir.join("max_freq")) {
-                    let mhz = (hz / 1_000_000) as f64;
-                    readings.push((
-                        sid("tegra-gpu", chip, "max_frequency"),
-                        SensorReading::new(
-                            format!("{chip} Max Frequency"),
-                            mhz,
-                            SensorUnit::Mhz,
-                            SensorCategory::Frequency,
-                        ),
-                    ));
-                }
+            // Max frequency (static, cached from discovery)
+            if let Some(max_mhz) = gpu.max_freq_mhz {
+                readings.push((
+                    sid("tegra-gpu", chip, "max_frequency"),
+                    SensorReading::new(
+                        format!("{chip} Max Frequency"),
+                        max_mhz as f64,
+                        SensorUnit::Mhz,
+                        SensorCategory::Frequency,
+                    ),
+                ));
             }
         }
 

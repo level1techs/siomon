@@ -1,4 +1,4 @@
-use super::super::{BoardTemplate, Platform, ASUS_AM5_NCT6798_LABELS};
+use super::super::{ASUS_AM5_NCT6798_LABELS, BoardTemplate, Platform};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["proart", "x670"],

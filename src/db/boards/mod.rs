@@ -1,12 +1,12 @@
-//! Per-board hardware templates.
+//! Per-board hardware templates, organized by vendor.
 //!
 //! Each board file defines a static `BoardTemplate` that combines sensor
 //! labels, voltage scaling references, and DIMM topology into a single
 //! declarative definition. Adding a new board requires:
 //!
-//! 1. Create `src/db/boards/<vendor>_<board>.rs` with `pub static BOARD: BoardTemplate`
-//! 2. Add `mod <vendor>_<board>;` below
-//! 3. Add `&<vendor>_<board>::BOARD` to the `BOARDS` array
+//! 1. Create `src/db/boards/<vendor>/<board>.rs` with `pub static BOARD: BoardTemplate`
+//! 2. Add `pub mod <board>;` to `<vendor>/mod.rs`
+//! 3. Add `&<vendor>::<board>::BOARD` to the `BOARDS` array below
 //!
 //! More-specific boards must come before more-generic ones in `BOARDS`
 //! (first match wins).
