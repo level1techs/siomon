@@ -386,14 +386,12 @@ fn build_panels<'a>(
     if let Some(p) = build_platform_panel(snapshot, max_entries, theme) {
         panels.push(p);
     }
-    // Extra panels for 3-col mode to fill space
-    if three_col {
-        if let Some(p) = build_voltage_panel(snapshot, history, spark_width, max_entries, theme) {
-            panels.push(p);
-        }
-        if let Some(p) = build_gpu_panel(snapshot, history, spark_width, max_entries, theme) {
-            panels.push(p);
-        }
+    // Extra panels — builders return None if no matching sensors
+    if let Some(p) = build_voltage_panel(snapshot, history, spark_width, max_entries, theme) {
+        panels.push(p);
+    }
+    if let Some(p) = build_gpu_panel(snapshot, history, spark_width, max_entries, theme) {
+        panels.push(p);
     }
     if let Some(p) = build_errors_panel(snapshot, theme) {
         panels.push(p);
@@ -994,7 +992,7 @@ fn build_voltage_panel<'a>(
     Some(Panel {
         title: "Voltage".into(),
         lines,
-        column: Column::Center,
+        column: Column::Right, // 2-col: right; 3-col: remapped to center
         truncated: total > max_entries,
     })
 }
@@ -1065,7 +1063,7 @@ fn build_gpu_panel<'a>(
     Some(Panel {
         title: "GPU".into(),
         lines,
-        column: Column::Center,
+        column: Column::Left, // 2-col: left; 3-col: remapped to center
         truncated: total > max_entries,
     })
 }
