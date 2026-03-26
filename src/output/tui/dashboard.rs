@@ -87,7 +87,7 @@ pub fn render(
     terminal.draw(|frame| {
         let size = frame.area();
         let estimated_panels = if dashboard_config.panels.is_empty() {
-            11 // built-in: 9 base + voltage + gpu in 3-col
+            13 // built-in: 9 base + cpu_cores + cpu_freq + voltage + gpu in 3-col
         } else {
             dashboard_config.panels.len()
         };
@@ -386,12 +386,20 @@ fn build_panels<'a>(
     if let Some(p) = build_platform_panel(snapshot, max_entries, theme) {
         panels.push(p);
     }
-    // Extra panels — builders return None if no matching sensors
-    if let Some(p) = build_voltage_panel(snapshot, history, spark_width, max_entries, theme) {
-        panels.push(p);
-    }
-    if let Some(p) = build_gpu_panel(snapshot, history, spark_width, max_entries, theme) {
-        panels.push(p);
+    // Extra panels for wide terminals — builders return None if no matching sensors
+    if three_col {
+        if let Some(p) = build_cpu_cores_panel(snapshot, history, spark_width, max_entries, theme) {
+            panels.push(p);
+        }
+        if let Some(p) = build_cpu_freq_panel(snapshot, history, spark_width, max_entries, theme) {
+            panels.push(p);
+        }
+        if let Some(p) = build_voltage_panel(snapshot, history, spark_width, max_entries, theme) {
+            panels.push(p);
+        }
+        if let Some(p) = build_gpu_panel(snapshot, history, spark_width, max_entries, theme) {
+            panels.push(p);
+        }
     }
     if let Some(p) = build_errors_panel(snapshot, theme) {
         panels.push(p);
@@ -399,14 +407,14 @@ fn build_panels<'a>(
 
     // Assign columns based on layout mode
     if three_col {
-        // Left: CPU (fixed), Memory (fixed), Fans (expandable)
-        // Center: Storage, Network, Voltage, GPU
-        // Right: Thermal, Power, Platform
+        // Left: CPU (fixed), Memory (fixed), CPU Cores (expandable, lots of data)
+        // Center: CPU Freq, Storage, Network, Voltage, GPU
+        // Right: Thermal, Power, Fans, Platform
         for panel in &mut panels {
             panel.column = match panel.title.as_str() {
-                "CPU" | "Memory" | "Fans" => Column::Left,
-                "Storage" | "Network" | "Voltage" | "GPU" => Column::Center,
-                "Thermal" | "Power" | "Platform" => Column::Right,
+                "CPU" | "Memory" | "CPU Cores" => Column::Left,
+                "CPU Freq" | "Storage" | "Network" | "Voltage" | "GPU" => Column::Center,
+                "Thermal" | "Power" | "Fans" | "Platform" => Column::Right,
                 _ => Column::Left, // Errors, etc.
             };
         }
@@ -939,6 +947,121 @@ fn build_platform_panel<'a>(
         lines,
         column: Column::Right,
         truncated: total_hsmp > max_entries,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// CPU Cores Panel (3-col only — per-core utilization)
+// ---------------------------------------------------------------------------
+
+fn build_cpu_cores_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    history: &'a SensorHistory,
+    spark_width: usize,
+    max_entries: usize,
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
+    let mut cores: Vec<&(SensorId, SensorReading)> = snapshot
+        .iter()
+        .filter(|(id, _)| {
+            id.source == "cpu"
+                && id.chip == "utilization"
+                && id.sensor.starts_with("cpu")
+                && id.sensor != "total"
+        })
+        .collect();
+
+    if cores.is_empty() {
+        return None;
+    }
+
+    cores.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
+    let total = cores.len();
+    cores.truncate(max_entries);
+
+    let lines: Vec<Line<'_>> = cores
+        .iter()
+        .map(|(id, r)| {
+            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+            let spark = history
+                .data
+                .get(&key)
+                .map(|buf| sparkline_str(buf, spark_width))
+                .unwrap_or_default();
+            Line::from(vec![
+                Span::styled(
+                    format!("{:<20} ", truncate_label(&r.label, 20)),
+                    theme.label_style(),
+                ),
+                Span::styled(format!("{:>5.1}%", r.current), theme.value_style(r)),
+                Span::raw("  "),
+                Span::styled(spark, theme.muted_style()),
+            ])
+        })
+        .collect();
+
+    Some(Panel {
+        title: "CPU Cores".into(),
+        lines,
+        column: Column::Left,
+        truncated: total > max_entries,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// CPU Freq Panel (3-col only — per-core frequency)
+// ---------------------------------------------------------------------------
+
+fn build_cpu_freq_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    history: &'a SensorHistory,
+    spark_width: usize,
+    max_entries: usize,
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
+    let mut freqs: Vec<&(SensorId, SensorReading)> = snapshot
+        .iter()
+        .filter(|(id, _)| id.source == "cpu" && id.chip == "cpufreq")
+        .collect();
+
+    if freqs.is_empty() {
+        return None;
+    }
+
+    freqs.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
+    let total = freqs.len();
+    freqs.truncate(max_entries);
+
+    let lines: Vec<Line<'_>> = freqs
+        .iter()
+        .map(|(id, r)| {
+            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+            let spark = history
+                .data
+                .get(&key)
+                .map(|buf| sparkline_str(buf, spark_width))
+                .unwrap_or_default();
+            let prec = format_precision(&r.unit);
+            Line::from(vec![
+                Span::styled(
+                    format!("{:<20} ", truncate_label(&r.label, 20)),
+                    theme.label_style(),
+                ),
+                Span::styled(
+                    format!("{:>7.*}{}", prec, r.current, r.unit),
+                    theme.value_style(r),
+                ),
+                Span::raw(" "),
+                Span::styled(spark, theme.muted_style()),
+            ])
+        })
+        .collect();
+
+    Some(Panel {
+        title: "CPU Freq".into(),
+        lines,
+        column: Column::Center,
+        truncated: total > max_entries,
     })
 }
 
