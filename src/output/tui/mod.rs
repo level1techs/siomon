@@ -115,6 +115,7 @@ pub fn run(
     poll_interval_ms: u64,
     alert_rules: Vec<crate::sensors::alerts::AlertRule>,
     theme: TuiTheme,
+    dashboard_config: &crate::config::DashboardConfig,
 ) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -145,6 +146,7 @@ pub fn run(
         poll_interval_ms,
         alert_rules,
         &theme,
+        dashboard_config,
     );
 
     // Best-effort cleanup: disable mouse modes before leaving alternate screen
@@ -164,6 +166,7 @@ fn run_loop(
     poll_interval_ms: u64,
     alert_rules: Vec<crate::sensors::alerts::AlertRule>,
     theme: &TuiTheme,
+    dashboard_config: &crate::config::DashboardConfig,
 ) -> io::Result<()> {
     let start = Instant::now();
     let mut scroll_offset: usize = 0;
@@ -293,6 +296,7 @@ fn run_loop(
                     &elapsed_str,
                     sensor_count,
                     theme,
+                    dashboard_config,
                 )?;
             }
         }

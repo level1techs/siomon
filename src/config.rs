@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::model::sensor::SensorCategory;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SiomonConfig {
     #[serde(default)]
@@ -9,6 +11,52 @@ pub struct SiomonConfig {
     /// Sensor label overrides: "hwmon/nct6798/in0" -> "Vcore"
     #[serde(default)]
     pub sensor_labels: HashMap<String, String>,
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DashboardConfig {
+    /// User-defined panels. If non-empty, replaces all built-in panels.
+    #[serde(default)]
+    pub panels: Vec<PanelConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PanelConfig {
+    pub title: String,
+    /// Glob pattern matched against "source/chip/sensor".
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// Category filter ANDed with `filter` (e.g. "temperature", "power").
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Per-panel max entries override (still clamped by adaptive limit).
+    #[serde(default)]
+    pub max_entries: Option<usize>,
+    /// Whether to show sparklines (default true).
+    #[serde(default = "default_true")]
+    pub sparklines: bool,
+    /// Sort order: "desc" (default), "asc", "name".
+    #[serde(default)]
+    pub sort: Option<String>,
+}
+
+/// Parse a category name (case-insensitive) into a `SensorCategory`.
+pub fn parse_category(s: &str) -> Option<SensorCategory> {
+    match s.to_ascii_lowercase().as_str() {
+        "temperature" | "temp" => Some(SensorCategory::Temperature),
+        "voltage" | "volt" => Some(SensorCategory::Voltage),
+        "current" => Some(SensorCategory::Current),
+        "power" => Some(SensorCategory::Power),
+        "fan" => Some(SensorCategory::Fan),
+        "frequency" | "freq" => Some(SensorCategory::Frequency),
+        "utilization" | "util" => Some(SensorCategory::Utilization),
+        "throughput" => Some(SensorCategory::Throughput),
+        "memory" => Some(SensorCategory::Memory),
+        "other" => Some(SensorCategory::Other),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,5 +220,60 @@ storage_exclude = ["loop", "zd", "custom"]
         let path = config_path();
         assert!(path.to_str().unwrap().contains("siomon"));
         assert!(path.to_str().unwrap().ends_with("config.toml"));
+    }
+
+    #[test]
+    fn test_empty_dashboard_defaults() {
+        let cfg: SiomonConfig = toml::from_str("").unwrap();
+        assert!(cfg.dashboard.panels.is_empty());
+    }
+
+    #[test]
+    fn test_parse_dashboard_panels() {
+        let toml_str = r#"
+[[dashboard.panels]]
+title = "GPU Temps"
+filter = "gpu/*"
+category = "temperature"
+max_entries = 12
+
+[[dashboard.panels]]
+title = "All Power"
+category = "power"
+sparklines = false
+sort = "name"
+"#;
+        let cfg: SiomonConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.dashboard.panels.len(), 2);
+
+        let p0 = &cfg.dashboard.panels[0];
+        assert_eq!(p0.title, "GPU Temps");
+        assert_eq!(p0.filter.as_deref(), Some("gpu/*"));
+        assert_eq!(p0.category.as_deref(), Some("temperature"));
+        assert_eq!(p0.max_entries, Some(12));
+        assert!(p0.sparklines);
+        assert!(p0.sort.is_none());
+
+        let p1 = &cfg.dashboard.panels[1];
+        assert_eq!(p1.title, "All Power");
+        assert!(p1.filter.is_none());
+        assert_eq!(p1.category.as_deref(), Some("power"));
+        assert!(p1.max_entries.is_none());
+        assert!(!p1.sparklines);
+        assert_eq!(p1.sort.as_deref(), Some("name"));
+    }
+
+    #[test]
+    fn test_parse_category() {
+        assert_eq!(
+            parse_category("temperature"),
+            Some(SensorCategory::Temperature)
+        );
+        assert_eq!(parse_category("Temp"), Some(SensorCategory::Temperature));
+        assert_eq!(parse_category("POWER"), Some(SensorCategory::Power));
+        assert_eq!(parse_category("fan"), Some(SensorCategory::Fan));
+        assert_eq!(parse_category("freq"), Some(SensorCategory::Frequency));
+        assert_eq!(parse_category("util"), Some(SensorCategory::Utilization));
+        assert!(parse_category("nonexistent").is_none());
     }
 }

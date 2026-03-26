@@ -12,8 +12,68 @@ use crate::model::sensor::{SensorCategory, SensorId, SensorReading};
 
 use super::{SensorHistory, format_precision, sparkline_str, theme::TuiTheme};
 
-/// Maximum sensors shown per panel.
-const MAX_PANEL_ENTRIES: usize = 6;
+struct LayoutParams {
+    num_columns: u8,
+    max_entries: usize,
+    spark_width: usize,
+    available_rows: u16,
+}
+
+/// Generous max entries based on available rows. Panels that don't need this
+/// many will show all their data and become fixed-size (`truncated: false`).
+/// Panels that get truncated will expand into remaining space via `Fill(1)`.
+fn max_entries_for_column(available_rows: u16) -> usize {
+    (available_rows.saturating_sub(2) as usize).clamp(2, 100)
+}
+
+fn compute_layout(width: u16, height: u16, panel_count: usize) -> LayoutParams {
+    let num_columns: u8 = if width >= 200 {
+        3
+    } else if width >= 120 {
+        2
+    } else {
+        1
+    };
+
+    let spark_width = if width < 80 {
+        0
+    } else if width < 120 {
+        10
+    } else if width < 200 {
+        15
+    } else {
+        20
+    };
+
+    let available_rows = height.saturating_sub(4); // header(3) + status(1)
+
+    let panels_per_col = panel_count.max(1).div_ceil(num_columns as usize) as u16;
+    let rows_per_panel = available_rows / panels_per_col;
+
+    let max_entries = (rows_per_panel.saturating_sub(2) as usize).clamp(2, 50);
+
+    LayoutParams {
+        num_columns,
+        max_entries,
+        spark_width,
+        available_rows,
+    }
+}
+
+fn panel_priority(title: &str) -> u8 {
+    match title {
+        "Errors" => 0,
+        "Platform" => 1,
+        "Memory" => 2,
+        "Fans" => 3,
+        "Power" => 4,
+        "Storage" => 5,
+        "Network" => 6,
+        "Thermal" => 7,
+        "CPU" => 8,
+        _ => 5,
+    }
+}
 
 pub fn render(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -22,10 +82,16 @@ pub fn render(
     elapsed_str: &str,
     sensor_count: usize,
     theme: &TuiTheme,
+    dashboard_config: &crate::config::DashboardConfig,
 ) -> io::Result<()> {
     terminal.draw(|frame| {
         let size = frame.area();
-        let wide = size.width >= 120;
+        let estimated_panels = if dashboard_config.panels.is_empty() {
+            11 // built-in: 9 base + voltage + gpu in 3-col
+        } else {
+            dashboard_config.panels.len()
+        };
+        let layout = compute_layout(size.width, size.height, estimated_panels);
 
         // Outer layout: header + main + status
         let outer = Layout::default()
@@ -57,34 +123,65 @@ pub fn render(
         frame.render_widget(status, outer[2]);
 
         // Build panel data
-        let panels = build_panels(snapshot, history, size.width, theme);
+        let panels = if dashboard_config.panels.is_empty() {
+            build_panels(snapshot, history, &layout, theme)
+        } else {
+            build_custom_panels(snapshot, history, &dashboard_config.panels, &layout, theme)
+        };
 
         if panels.is_empty() {
             return;
         }
 
         // Separate errors panel (full-width) from normal panels
-        let (normal, errors): (Vec<_>, Vec<_>) =
+        let (mut normal, errors): (Vec<_>, Vec<_>) =
             panels.into_iter().partition(|p| p.title != "Errors");
 
-        if wide {
-            render_wide(frame, outer[1], &normal, &errors, theme);
-        } else {
-            render_narrow(frame, outer[1], &normal, &errors, theme);
+        // Drop lowest-priority panels if space is too tight
+        if !normal.is_empty() {
+            let num_cols = layout.num_columns as u16;
+            loop {
+                let panels_per_col = ((normal.len() as f32) / (num_cols as f32)).ceil() as u16;
+                if panels_per_col == 0
+                    || layout.available_rows / panels_per_col >= 4
+                    || normal.len() <= 1
+                {
+                    break;
+                }
+                // Remove the panel with the lowest priority value (least important)
+                if let Some(idx) = normal
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, p)| panel_priority(&p.title))
+                    .map(|(i, _)| i)
+                {
+                    normal.remove(idx);
+                }
+            }
+        }
+
+        match layout.num_columns {
+            3 => render_three_col(frame, outer[1], &normal, &errors, theme),
+            2 => render_wide(frame, outer[1], &normal, &errors, theme),
+            _ => render_narrow(frame, outer[1], &normal, &errors, theme),
         }
     })?;
     Ok(())
 }
 
 struct Panel<'a> {
-    title: &'a str,
+    title: String,
     lines: Vec<Line<'a>>,
     column: Column,
+    /// True if the panel had more data than it could show (was truncated).
+    /// Truncated panels expand to fill remaining space; others get tight sizing.
+    truncated: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Column {
     Left,
+    Center,
     Right,
 }
 
@@ -114,7 +211,7 @@ fn render_wide(
 
     let left: Vec<&Panel<'_>> = normal
         .iter()
-        .filter(|p| matches!(p.column, Column::Left))
+        .filter(|p| matches!(p.column, Column::Left | Column::Center))
         .collect();
     let right: Vec<&Panel<'_>> = normal
         .iter()
@@ -123,6 +220,59 @@ fn render_wide(
 
     render_column(frame, cols[0], &left, theme);
     render_column(frame, cols[1], &right, theme);
+
+    // Errors full width
+    if !errors.is_empty() {
+        render_column(
+            frame,
+            main_split[1],
+            &errors.iter().collect::<Vec<_>>(),
+            theme,
+        );
+    }
+}
+
+fn render_three_col(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    normal: &[Panel<'_>],
+    errors: &[Panel<'_>],
+    theme: &TuiTheme,
+) {
+    let errors_height = if errors.is_empty() {
+        0
+    } else {
+        errors.iter().map(|p| p.lines.len() as u16 + 2).sum::<u16>()
+    };
+
+    let main_split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(errors_height)])
+        .split(area);
+
+    // Three columns: 33% / 34% / 33%
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(33),
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+        ])
+        .split(main_split[0]);
+
+    let left: Vec<&Panel<'_>> = normal.iter().filter(|p| p.column == Column::Left).collect();
+    let center: Vec<&Panel<'_>> = normal
+        .iter()
+        .filter(|p| p.column == Column::Center)
+        .collect();
+    let right: Vec<&Panel<'_>> = normal
+        .iter()
+        .filter(|p| p.column == Column::Right)
+        .collect();
+
+    render_column(frame, cols[0], &left, theme);
+    render_column(frame, cols[1], &center, theme);
+    render_column(frame, cols[2], &right, theme);
 
     // Errors full width
     if !errors.is_empty() {
@@ -151,11 +301,31 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
         return;
     }
 
-    let constraints: Vec<Constraint> = panels
-        .iter()
-        .map(|p| Constraint::Length(p.lines.len() as u16 + 2)) // +2 for block borders
-        .chain(std::iter::once(Constraint::Min(0))) // absorb remaining space
-        .collect();
+    // Truncated panels (have more data to show) expand to fill remaining space.
+    // Non-truncated panels (showing all their data) get tight sizing.
+    // If nothing is truncated, spread remaining space evenly across all panels
+    // so no single gap pools at the bottom.
+    let has_truncated = panels.iter().any(|p| p.truncated);
+    let constraints: Vec<Constraint> = if has_truncated {
+        panels
+            .iter()
+            .map(|p| {
+                if p.truncated {
+                    Constraint::Fill(1)
+                } else {
+                    Constraint::Length(p.lines.len() as u16 + 2)
+                }
+            })
+            .collect()
+    } else {
+        // No truncation — all data is visible. Use Min(content) so each panel
+        // gets at least its content height, then remaining space distributes
+        // proportionally rather than pooling at the bottom.
+        panels
+            .iter()
+            .map(|p| Constraint::Min(p.lines.len() as u16 + 2))
+            .collect()
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -180,39 +350,70 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
 fn build_panels<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
-    term_width: u16,
+    layout: &LayoutParams,
     theme: &TuiTheme,
 ) -> Vec<Panel<'a>> {
-    let spark_width = if term_width >= 120 { 15 } else { 10 };
+    let spark_width = layout.spark_width;
+    let three_col = layout.num_columns >= 3;
+
+    // Generous limit — panels that show all their data become fixed-size,
+    // truncated panels expand via Fill(1). Paragraph clips any overflow.
+    let max_entries = max_entries_for_column(layout.available_rows);
+
     let mut panels = Vec::new();
 
     if let Some(p) = build_cpu_panel(snapshot, history, spark_width, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_thermal_panel(snapshot, history, spark_width, theme) {
+    if let Some(p) = build_thermal_panel(snapshot, history, spark_width, max_entries, theme) {
         panels.push(p);
     }
     if let Some(p) = build_memory_panel(snapshot, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_power_panel(snapshot, history, spark_width, theme) {
+    if let Some(p) = build_power_panel(snapshot, history, spark_width, max_entries, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_storage_panel(snapshot, theme) {
+    if let Some(p) = build_storage_panel(snapshot, max_entries, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_network_panel(snapshot, theme) {
+    if let Some(p) = build_network_panel(snapshot, max_entries, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_fans_panel(snapshot, theme) {
+    if let Some(p) = build_fans_panel(snapshot, max_entries, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_platform_panel(snapshot, theme) {
+    if let Some(p) = build_platform_panel(snapshot, max_entries, theme) {
         panels.push(p);
+    }
+    // Extra panels for 3-col mode to fill space
+    if three_col {
+        if let Some(p) = build_voltage_panel(snapshot, history, spark_width, max_entries, theme) {
+            panels.push(p);
+        }
+        if let Some(p) = build_gpu_panel(snapshot, history, spark_width, max_entries, theme) {
+            panels.push(p);
+        }
     }
     if let Some(p) = build_errors_panel(snapshot, theme) {
         panels.push(p);
     }
+
+    // Assign columns based on layout mode
+    if three_col {
+        // Left: CPU (fixed), Memory (fixed), Fans (expandable)
+        // Center: Storage, Network, Voltage, GPU
+        // Right: Thermal, Power, Platform
+        for panel in &mut panels {
+            panel.column = match panel.title.as_str() {
+                "CPU" | "Memory" | "Fans" => Column::Left,
+                "Storage" | "Network" | "Voltage" | "GPU" => Column::Center,
+                "Thermal" | "Power" | "Platform" => Column::Right,
+                _ => Column::Left, // Errors, etc.
+            };
+        }
+    }
+    // In 2-col mode, keep the assignments from the individual builders
 
     panels
 }
@@ -319,9 +520,10 @@ fn build_cpu_panel<'a>(
     }
 
     Some(Panel {
-        title: "CPU",
+        title: "CPU".into(),
         lines,
         column: Column::Left,
+        truncated: false,
     })
 }
 
@@ -347,6 +549,7 @@ fn build_thermal_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
     spark_width: usize,
+    max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let mut temps: Vec<&(SensorId, SensorReading)> = snapshot
@@ -363,7 +566,8 @@ fn build_thermal_panel<'a>(
             .partial_cmp(&a.current)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    temps.truncate(MAX_PANEL_ENTRIES);
+    let total = temps.len();
+    temps.truncate(max_entries);
 
     let lines: Vec<Line<'_>> = temps
         .iter()
@@ -389,9 +593,10 @@ fn build_thermal_panel<'a>(
         .collect();
 
     Some(Panel {
-        title: "Thermal",
+        title: "Thermal".into(),
         lines,
         column: Column::Right,
+        truncated: total > max_entries,
     })
 }
 
@@ -415,7 +620,7 @@ fn build_memory_panel<'a>(
     // HSMP DDR bandwidth and memory clock
     for (_, r) in snapshot.iter().filter(|(id, _)| is_hsmp_memory_sensor(id)) {
         let prec = format_precision(&r.unit);
-        let unit_str = format!("{}", r.unit);
+        let unit_str = r.unit.to_string();
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{:<20} ", truncate_label(&r.label, 20)),
@@ -447,9 +652,10 @@ fn build_memory_panel<'a>(
     }
 
     Some(Panel {
-        title: "Memory",
+        title: "Memory".into(),
         lines,
         column: Column::Left,
+        truncated: false,
     })
 }
 
@@ -461,6 +667,7 @@ fn build_power_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
     spark_width: usize,
+    max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let mut power: Vec<&(SensorId, SensorReading)> = snapshot
@@ -479,7 +686,8 @@ fn build_power_panel<'a>(
             .partial_cmp(&a.current)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    power.truncate(MAX_PANEL_ENTRIES);
+    let total = power.len();
+    power.truncate(max_entries);
 
     let lines: Vec<Line<'_>> = power
         .iter()
@@ -505,9 +713,10 @@ fn build_power_panel<'a>(
         .collect();
 
     Some(Panel {
-        title: "Power",
+        title: "Power".into(),
         lines,
         column: Column::Right,
+        truncated: total > max_entries,
     })
 }
 
@@ -517,6 +726,7 @@ fn build_power_panel<'a>(
 
 fn build_storage_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
+    max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let disk_sensors: Vec<&(SensorId, SensorReading)> = snapshot
@@ -544,7 +754,8 @@ fn build_storage_panel<'a>(
         .map(|(name, (r, w))| (name, r.unwrap_or(0.0), w.unwrap_or(0.0)))
         .collect();
     dev_list.sort_by(|a, b| a.0.cmp(b.0));
-    dev_list.truncate(MAX_PANEL_ENTRIES);
+    let total_devs = dev_list.len();
+    dev_list.truncate(max_entries);
 
     let lines: Vec<Line<'_>> = dev_list
         .into_iter()
@@ -562,9 +773,10 @@ fn build_storage_panel<'a>(
         .collect();
 
     Some(Panel {
-        title: "Storage",
+        title: "Storage".into(),
         lines,
         column: Column::Left,
+        truncated: total_devs > max_entries,
     })
 }
 
@@ -581,6 +793,7 @@ struct NetIfaceData<'a> {
 
 fn build_network_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
+    max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let net_sensors: Vec<&(SensorId, SensorReading)> = snapshot
@@ -611,7 +824,8 @@ fn build_network_panel<'a>(
 
     let mut iface_list: Vec<NetIfaceData<'_>> = ifaces.into_values().collect();
     iface_list.sort_by(|a, b| a.name.cmp(b.name));
-    iface_list.truncate(MAX_PANEL_ENTRIES);
+    let total_ifaces = iface_list.len();
+    iface_list.truncate(max_entries);
 
     const BAR_WIDTH: usize = 6;
     let lines: Vec<Line<'_>> = iface_list
@@ -635,9 +849,10 @@ fn build_network_panel<'a>(
         .collect();
 
     Some(Panel {
-        title: "Network",
+        title: "Network".into(),
         lines,
         column: Column::Right,
+        truncated: total_ifaces > max_entries,
     })
 }
 
@@ -647,6 +862,7 @@ fn build_network_panel<'a>(
 
 fn build_fans_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
+    max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let mut fans: Vec<&(SensorId, SensorReading)> = snapshot
@@ -659,7 +875,8 @@ fn build_fans_panel<'a>(
     }
 
     fans.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
-    fans.truncate(MAX_PANEL_ENTRIES);
+    let total_fans = fans.len();
+    fans.truncate(max_entries);
 
     let lines: Vec<Line<'_>> = fans
         .iter()
@@ -673,9 +890,10 @@ fn build_fans_panel<'a>(
         .collect();
 
     Some(Panel {
-        title: "Fans",
+        title: "Fans".into(),
         lines,
         column: Column::Left,
+        truncated: total_fans > max_entries,
     })
 }
 
@@ -685,6 +903,7 @@ fn build_fans_panel<'a>(
 
 fn build_platform_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
+    max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     // DDR bandwidth and memory clock are shown in the Memory panel.
@@ -697,12 +916,13 @@ fn build_platform_panel<'a>(
         return None;
     }
 
+    let total_hsmp = hsmp.len();
     let lines: Vec<Line<'_>> = hsmp
         .iter()
-        .take(MAX_PANEL_ENTRIES)
+        .take(max_entries)
         .map(|(_, r)| {
             let prec = format_precision(&r.unit);
-            let unit_str = format!("{}", r.unit);
+            let unit_str = r.unit.to_string();
             Line::from(vec![
                 Span::styled(
                     format!("{:<20} ", truncate_label(&r.label, 20)),
@@ -717,9 +937,136 @@ fn build_platform_panel<'a>(
         .collect();
 
     Some(Panel {
-        title: "Platform",
+        title: "Platform".into(),
         lines,
         column: Column::Right,
+        truncated: total_hsmp > max_entries,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Voltage Panel (3-col only)
+// ---------------------------------------------------------------------------
+
+fn build_voltage_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    history: &'a SensorHistory,
+    spark_width: usize,
+    max_entries: usize,
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
+    let mut volts: Vec<&(SensorId, SensorReading)> = snapshot
+        .iter()
+        .filter(|(_, r)| r.category == SensorCategory::Voltage)
+        .collect();
+
+    if volts.is_empty() {
+        return None;
+    }
+
+    volts.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
+    let total = volts.len();
+    volts.truncate(max_entries);
+
+    let lines: Vec<Line<'_>> = volts
+        .iter()
+        .map(|(id, r)| {
+            let label = truncate_label(&r.label, 20);
+            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+            let spark = history
+                .data
+                .get(&key)
+                .map(|buf| sparkline_str(buf, spark_width))
+                .unwrap_or_default();
+            let prec = format_precision(&r.unit);
+            Line::from(vec![
+                Span::styled(format!("{label:<20} "), theme.label_style()),
+                Span::styled(
+                    format!("{:>7.*}{}", prec, r.current, r.unit),
+                    theme.voltage_style(),
+                ),
+                Span::raw(" "),
+                Span::styled(spark, theme.muted_style()),
+            ])
+        })
+        .collect();
+
+    Some(Panel {
+        title: "Voltage".into(),
+        lines,
+        column: Column::Center,
+        truncated: total > max_entries,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// GPU Panel (3-col only — groups NVML + amdgpu sensors per GPU)
+// ---------------------------------------------------------------------------
+
+fn build_gpu_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    history: &'a SensorHistory,
+    spark_width: usize,
+    max_entries: usize,
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
+    let gpu_sensors: Vec<&(SensorId, SensorReading)> = snapshot
+        .iter()
+        .filter(|(id, _)| id.source == "nvml" || id.source == "amdgpu")
+        .collect();
+
+    if gpu_sensors.is_empty() {
+        return None;
+    }
+
+    let total = gpu_sensors.len();
+    let lines: Vec<Line<'_>> = gpu_sensors
+        .iter()
+        .take(max_entries)
+        .map(|(id, r)| {
+            // Build a compact label: "GPU0 Temp", "GPU1 Power", etc.
+            let gpu_idx = id.chip.trim_start_matches(|c: char| !c.is_ascii_digit());
+            let sensor_name = match id.sensor.as_str() {
+                "temperature" => "Temp",
+                "fan_speed" | "fan" => "Fan",
+                "power" => "Power",
+                "core_clock" => "Core Clk",
+                "mem_clock" => "Mem Clk",
+                "gpu_util" => "GPU Util",
+                "mem_util" => "Mem Util",
+                "vram_used" => "VRAM Used",
+                other => other,
+            };
+            let label = format!("GPU{gpu_idx} {sensor_name}");
+            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+            let spark = history
+                .data
+                .get(&key)
+                .map(|buf| sparkline_str(buf, spark_width))
+                .unwrap_or_default();
+            let prec = format_precision(&r.unit);
+            let unit_str = r.unit.to_string();
+            // Pad unit to 3 display columns (°C is 2 chars but 3 bytes)
+            let unit_display_width = unit_str.chars().count();
+            let unit_padded = format!(
+                "{unit_str}{}",
+                " ".repeat(3usize.saturating_sub(unit_display_width))
+            );
+            Line::from(vec![
+                Span::styled(format!("{label:<20} "), theme.label_style()),
+                Span::styled(format!("{:>7.*}", prec, r.current), theme.value_style(r)),
+                Span::styled(unit_padded, theme.muted_style()),
+                Span::raw(" "),
+                Span::styled(spark, theme.muted_style()),
+            ])
+        })
+        .collect();
+
+    Some(Panel {
+        title: "GPU".into(),
+        lines,
+        column: Column::Center,
+        truncated: total > max_entries,
     })
 }
 
@@ -762,9 +1109,138 @@ fn build_errors_panel<'a>(
     ])];
 
     Some(Panel {
-        title: "Errors",
+        title: "Errors".into(),
         lines,
         column: Column::Left, // doesn't matter, errors span full width
+        truncated: false,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Custom Panels
+// ---------------------------------------------------------------------------
+
+fn build_custom_panels<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    history: &'a SensorHistory,
+    configs: &[crate::config::PanelConfig],
+    layout: &LayoutParams,
+    theme: &TuiTheme,
+) -> Vec<Panel<'a>> {
+    let columns = match layout.num_columns {
+        3 => &[Column::Left, Column::Center, Column::Right][..],
+        2 => &[Column::Left, Column::Right][..],
+        _ => &[Column::Left][..],
+    };
+
+    let mut panels = Vec::new();
+    for (i, config) in configs.iter().enumerate() {
+        if let Some(mut panel) = build_custom_panel(snapshot, history, config, layout, theme) {
+            panel.column = columns[i % columns.len()];
+            panels.push(panel);
+        }
+    }
+    panels
+}
+
+fn build_custom_panel<'a>(
+    snapshot: &'a [(SensorId, SensorReading)],
+    history: &'a SensorHistory,
+    config: &crate::config::PanelConfig,
+    layout: &LayoutParams,
+    theme: &TuiTheme,
+) -> Option<Panel<'a>> {
+    let pattern = config
+        .filter
+        .as_ref()
+        .and_then(|f| glob::Pattern::new(f).ok());
+
+    let category = config
+        .category
+        .as_ref()
+        .and_then(|c| crate::config::parse_category(c));
+
+    let match_opts = glob::MatchOptions {
+        require_literal_separator: false,
+        ..Default::default()
+    };
+
+    let mut matched: Vec<&(SensorId, SensorReading)> = snapshot
+        .iter()
+        .filter(|(id, r)| {
+            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+            let glob_ok = pattern
+                .as_ref()
+                .is_none_or(|p| p.matches_with(&key, match_opts));
+            let cat_ok = category.is_none_or(|c| r.category == c);
+            glob_ok && cat_ok
+        })
+        .collect();
+
+    if matched.is_empty() {
+        return None;
+    }
+
+    // Sort
+    let sort_order = config.sort.as_deref().unwrap_or("desc");
+    match sort_order {
+        "asc" => matched.sort_by(|(_, a), (_, b)| {
+            a.current
+                .partial_cmp(&b.current)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        "name" => matched.sort_by(|(_, a), (_, b)| a.label.cmp(&b.label)),
+        _ => matched.sort_by(|(_, a), (_, b)| {
+            b.current
+                .partial_cmp(&a.current)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+    }
+
+    let max = config
+        .max_entries
+        .unwrap_or(layout.max_entries)
+        .min(layout.max_entries);
+    let total_matched = matched.len();
+    matched.truncate(max);
+
+    let spark_width = if config.sparklines {
+        layout.spark_width
+    } else {
+        0
+    };
+
+    let lines: Vec<Line<'_>> = matched
+        .iter()
+        .map(|(id, r)| {
+            let label = truncate_label(&r.label, 20);
+            let prec = format_precision(&r.unit);
+            let mut spans = vec![
+                Span::styled(format!("{label:<20} "), theme.label_style()),
+                Span::styled(
+                    format!("{:>7.*}{}", prec, r.current, r.unit),
+                    theme.value_style(r),
+                ),
+            ];
+            if spark_width > 0 {
+                let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+                let spark = history
+                    .data
+                    .get(&key)
+                    .map(|buf| sparkline_str(buf, spark_width))
+                    .unwrap_or_default();
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(spark, theme.muted_style()));
+            }
+            Line::from(spans)
+        })
+        .collect();
+
+    Some(Panel {
+        title: config.title.clone(),
+        lines,
+        column: Column::Left, // caller will reassign
+        truncated: total_matched > max,
     })
 }
 
@@ -848,5 +1324,43 @@ mod tests {
         // Clamped to 1.0
         let bar = net_bar(200.0, Some(125.0), 6);
         assert_eq!(bar, "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}");
+    }
+
+    #[test]
+    fn test_compute_layout_small() {
+        let l = compute_layout(80, 24, 9);
+        assert_eq!(l.num_columns, 1);
+        assert_eq!(l.spark_width, 10);
+        assert!(l.max_entries >= 2);
+    }
+
+    #[test]
+    fn test_compute_layout_standard() {
+        let l = compute_layout(160, 50, 9);
+        assert_eq!(l.num_columns, 2);
+        assert_eq!(l.spark_width, 15);
+        assert!(l.max_entries > 6);
+    }
+
+    #[test]
+    fn test_compute_layout_ultrawide() {
+        let l = compute_layout(250, 60, 9);
+        assert_eq!(l.num_columns, 3);
+        assert_eq!(l.spark_width, 20);
+    }
+
+    #[test]
+    fn test_compute_layout_tiny() {
+        let l = compute_layout(60, 10, 9);
+        assert_eq!(l.num_columns, 1);
+        assert_eq!(l.spark_width, 0);
+        assert_eq!(l.max_entries, 2); // clamped to minimum
+    }
+
+    #[test]
+    fn test_panel_priority_ordering() {
+        assert!(panel_priority("CPU") > panel_priority("Thermal"));
+        assert!(panel_priority("Thermal") > panel_priority("Errors"));
+        assert!(panel_priority("Errors") < panel_priority("Storage"));
     }
 }

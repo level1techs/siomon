@@ -132,7 +132,14 @@ fn run_monitor(
             })
             .collect();
 
-        if let Err(e) = output::tui::run(state, poll_stats, cli.interval, alert_rules, theme) {
+        if let Err(e) = output::tui::run(
+            state,
+            poll_stats,
+            cli.interval,
+            alert_rules,
+            theme,
+            &config.dashboard,
+        ) {
             eprintln!("TUI error: {e}");
         }
 
