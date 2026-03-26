@@ -65,12 +65,16 @@ fn panel_priority(title: &str) -> u8 {
         "Errors" => 0,
         "Platform" => 1,
         "Memory" => 2,
-        "Fans" => 3,
-        "Power" => 4,
-        "Storage" => 5,
+        "Voltage" => 3,
+        "Fans" => 4,
+        "CPU Cores" => 4, // expendable — summary bar is in CPU panel
+        "CPU Freq" => 4,
+        "Power" => 5,
+        "Storage" => 6,
         "Network" => 6,
-        "Thermal" => 7,
-        "CPU" => 8,
+        "GPU" => 7,
+        "Thermal" => 8,
+        "CPU" => 9,
         _ => 5,
     }
 }
@@ -386,7 +390,7 @@ fn build_panels<'a>(
     if let Some(p) = build_platform_panel(snapshot, max_entries, theme) {
         panels.push(p);
     }
-    // Extra panels for wide terminals — builders return None if no matching sensors
+    // Per-core panels only in 3-col — too many rows for narrow layouts
     if three_col {
         if let Some(p) = build_cpu_cores_panel(snapshot, history, spark_width, max_entries, theme) {
             panels.push(p);
@@ -394,12 +398,13 @@ fn build_panels<'a>(
         if let Some(p) = build_cpu_freq_panel(snapshot, history, spark_width, max_entries, theme) {
             panels.push(p);
         }
-        if let Some(p) = build_voltage_panel(snapshot, history, spark_width, max_entries, theme) {
-            panels.push(p);
-        }
-        if let Some(p) = build_gpu_panel(snapshot, history, spark_width, max_entries, theme) {
-            panels.push(p);
-        }
+    }
+    // Voltage and GPU in all layout modes
+    if let Some(p) = build_voltage_panel(snapshot, history, spark_width, max_entries, theme) {
+        panels.push(p);
+    }
+    if let Some(p) = build_gpu_panel(snapshot, history, spark_width, max_entries, theme) {
+        panels.push(p);
     }
     if let Some(p) = build_errors_panel(snapshot, theme) {
         panels.push(p);
@@ -1492,5 +1497,10 @@ mod tests {
         assert!(panel_priority("CPU") > panel_priority("Thermal"));
         assert!(panel_priority("Thermal") > panel_priority("Errors"));
         assert!(panel_priority("Errors") < panel_priority("Storage"));
+        // New panels have explicit priorities
+        assert!(panel_priority("CPU Cores") < panel_priority("GPU"));
+        assert!(panel_priority("CPU Freq") < panel_priority("GPU"));
+        assert!(panel_priority("Voltage") < panel_priority("Power"));
+        assert!(panel_priority("GPU") == panel_priority("GPU"));
     }
 }
