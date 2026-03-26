@@ -4,6 +4,8 @@ pkgname=siomon
 pkgver=0.2.3
 pkgrel=1
 pkgdesc="Hardware information and real-time sensor monitoring tool"
+# Must list compiled architectures, not "any" — namcap rejects ELF binaries
+# in an "any" package.
 arch=(x86_64 aarch64)
 url="https://github.com/level1techs/siomon"
 license=('MIT')

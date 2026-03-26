@@ -121,7 +121,9 @@ jobs:
             # New upstream version — first repack
             NEW_REPACK=1
           else
-            # Same upstream version already published — increment repack for a fresh tarball
+            # Same upstream version already published — increment repack so each
+            # run produces a unique orig tarball name. Launchpad rejects
+            # re-uploads with different content under the same tarball name.
             NEW_REPACK=$((MAX_REPACK + 1))
           fi
           NEW_REV=1
@@ -230,7 +232,9 @@ jobs:
             mkdir -p "$BUILD_DIR"
             tar -xzf "$WORK_DIR/${ORIG_TARBALL}" -C "$BUILD_DIR" --strip-components=1
 
-            # Copy debian/ from packaging templates
+            # Copy debian/ from packaging templates. These are not used as-is:
+            # changelog is overwritten below, and control/rules are sed-modified
+            # per series (e.g. Noble uses versioned cargo-1.85/rustc-1.85).
             cp -r "$GITHUB_WORKSPACE/packaging/launchpad/debian" "$BUILD_DIR/debian"
 
             # Write series-specific changelog
@@ -252,7 +256,8 @@ jobs:
             sed -i "s|cargo build|${CARGO_BIN} build|; s|cargo clean|${CARGO_BIN} clean|" \
               "$BUILD_DIR/debian/rules"
 
-            # Build unsigned source package (orig tarball is already in $WORK_DIR which is ..)
+            # Build source-only package — Launchpad compiles in clean chroots,
+            # so all series can be built on a single runner.
             cd "$BUILD_DIR"
             debuild -S -sa -d -us -uc
           done
@@ -310,7 +315,10 @@ jobs:
           echo "==> GPG key not on keyserver, publishing $GPG_FINGERPRINT..."
           gpg --keyserver hkp://keyserver.ubuntu.com --send-keys "$GPG_FINGERPRINT"
 
-          # Dispatch the retry workflow with all state as inputs
+          # Dispatch the retry workflow with all pending-upload state as inputs.
+          # The retry workflow uses a gpg-retry-delay environment with a 20-min
+          # wait timer (no runner cost during the wait). It self-dispatches until
+          # the key propagates, then re-dispatches this PPA workflow. 6-hour timeout.
           echo "==> Scheduling GPG keyserver retry workflow..."
           gh workflow run gpg-keyserver-retry.yml \
             -f gpg_fingerprint="$GPG_FINGERPRINT" \
