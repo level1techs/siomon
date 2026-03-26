@@ -1335,7 +1335,8 @@ fn build_custom_panel<'a>(
     let max = config
         .max_entries
         .unwrap_or(layout.max_entries)
-        .min(layout.max_entries);
+        .min(layout.max_entries)
+        .max(1);
     let total_matched = matched.len();
     matched.truncate(max);
 
@@ -1502,5 +1503,253 @@ mod tests {
         assert!(panel_priority("CPU Freq") < panel_priority("GPU"));
         assert!(panel_priority("Voltage") < panel_priority("Power"));
         assert!(panel_priority("GPU") == panel_priority("GPU"));
+    }
+
+    // -- Custom panel tests --------------------------------------------------
+
+    use crate::model::sensor::{SensorReading, SensorUnit};
+
+    fn make_sensor(
+        source: &str,
+        chip: &str,
+        sensor: &str,
+        label: &str,
+        value: f64,
+        unit: SensorUnit,
+        category: SensorCategory,
+    ) -> (SensorId, SensorReading) {
+        (
+            SensorId {
+                source: source.into(),
+                chip: chip.into(),
+                sensor: sensor.into(),
+            },
+            SensorReading::new(label.to_string(), value, unit, category),
+        )
+    }
+
+    fn test_layout() -> LayoutParams {
+        compute_layout(200, 50, 9)
+    }
+
+    #[test]
+    fn test_custom_panel_glob_filter() {
+        let snapshot = vec![
+            make_sensor(
+                "hwmon",
+                "nct6798",
+                "temp1",
+                "CPU",
+                50.0,
+                SensorUnit::Celsius,
+                SensorCategory::Temperature,
+            ),
+            make_sensor(
+                "hwmon",
+                "nct6798",
+                "in0",
+                "Vcore",
+                1.2,
+                SensorUnit::Volts,
+                SensorCategory::Voltage,
+            ),
+            make_sensor(
+                "gpu",
+                "gpu0",
+                "temp",
+                "GPU Temp",
+                60.0,
+                SensorUnit::Celsius,
+                SensorCategory::Temperature,
+            ),
+        ];
+        let history = SensorHistory::new();
+        let layout = test_layout();
+        let theme = super::super::theme::TuiTheme::default();
+
+        let config = crate::config::PanelConfig {
+            title: "Test".into(),
+            filter: Some("hwmon/*".into()),
+            category: None,
+            max_entries: None,
+            sparklines: true,
+            sort: None,
+        };
+        let panel = build_custom_panel(&snapshot, &history, &config, &layout, &theme);
+        assert!(panel.is_some());
+        assert_eq!(panel.unwrap().lines.len(), 2); // matches hwmon sensors only
+    }
+
+    #[test]
+    fn test_custom_panel_category_filter() {
+        let snapshot = vec![
+            make_sensor(
+                "hwmon",
+                "nct6798",
+                "temp1",
+                "CPU",
+                50.0,
+                SensorUnit::Celsius,
+                SensorCategory::Temperature,
+            ),
+            make_sensor(
+                "hwmon",
+                "nct6798",
+                "in0",
+                "Vcore",
+                1.2,
+                SensorUnit::Volts,
+                SensorCategory::Voltage,
+            ),
+        ];
+        let history = SensorHistory::new();
+        let layout = test_layout();
+        let theme = super::super::theme::TuiTheme::default();
+
+        let config = crate::config::PanelConfig {
+            title: "Temps".into(),
+            filter: None,
+            category: Some("temperature".into()),
+            max_entries: None,
+            sparklines: true,
+            sort: None,
+        };
+        let panel = build_custom_panel(&snapshot, &history, &config, &layout, &theme).unwrap();
+        assert_eq!(panel.lines.len(), 1); // only the temp sensor
+    }
+
+    #[test]
+    fn test_custom_panel_invalid_category_returns_none() {
+        let snapshot = vec![make_sensor(
+            "hwmon",
+            "nct6798",
+            "temp1",
+            "CPU",
+            50.0,
+            SensorUnit::Celsius,
+            SensorCategory::Temperature,
+        )];
+        let history = SensorHistory::new();
+        let layout = test_layout();
+        let theme = super::super::theme::TuiTheme::default();
+
+        let config = crate::config::PanelConfig {
+            title: "Bad".into(),
+            filter: None,
+            category: Some("temprature".into()), // typo
+            max_entries: None,
+            sparklines: true,
+            sort: None,
+        };
+        assert!(build_custom_panel(&snapshot, &history, &config, &layout, &theme).is_none());
+    }
+
+    #[test]
+    fn test_custom_panel_sort_desc() {
+        let snapshot = vec![
+            make_sensor(
+                "hwmon",
+                "nct6798",
+                "temp1",
+                "Low",
+                30.0,
+                SensorUnit::Celsius,
+                SensorCategory::Temperature,
+            ),
+            make_sensor(
+                "hwmon",
+                "nct6798",
+                "temp2",
+                "High",
+                80.0,
+                SensorUnit::Celsius,
+                SensorCategory::Temperature,
+            ),
+            make_sensor(
+                "hwmon",
+                "nct6798",
+                "temp3",
+                "Mid",
+                55.0,
+                SensorUnit::Celsius,
+                SensorCategory::Temperature,
+            ),
+        ];
+        let history = SensorHistory::new();
+        let layout = test_layout();
+        let theme = super::super::theme::TuiTheme::default();
+
+        let config = crate::config::PanelConfig {
+            title: "Sorted".into(),
+            filter: None,
+            category: Some("temperature".into()),
+            max_entries: None,
+            sparklines: false,
+            sort: Some("desc".into()),
+        };
+        let panel = build_custom_panel(&snapshot, &history, &config, &layout, &theme).unwrap();
+        assert_eq!(panel.lines.len(), 3);
+        // First line should contain "High" (80°C), not "Low" (30°C)
+        let first_line = format!("{}", panel.lines[0]);
+        assert!(
+            first_line.contains("High"),
+            "Expected 'High' first, got: {first_line}"
+        );
+    }
+
+    #[test]
+    fn test_custom_panel_empty_snapshot() {
+        let snapshot: Vec<(SensorId, SensorReading)> = vec![];
+        let history = SensorHistory::new();
+        let layout = test_layout();
+        let theme = super::super::theme::TuiTheme::default();
+
+        let config = crate::config::PanelConfig {
+            title: "Empty".into(),
+            filter: None,
+            category: None,
+            max_entries: None,
+            sparklines: true,
+            sort: None,
+        };
+        assert!(build_custom_panel(&snapshot, &history, &config, &layout, &theme).is_none());
+    }
+
+    #[test]
+    fn test_custom_panel_max_entries_zero_clamped() {
+        let snapshot = vec![
+            make_sensor(
+                "hwmon",
+                "nct6798",
+                "temp1",
+                "CPU",
+                50.0,
+                SensorUnit::Celsius,
+                SensorCategory::Temperature,
+            ),
+            make_sensor(
+                "hwmon",
+                "nct6798",
+                "temp2",
+                "GPU",
+                60.0,
+                SensorUnit::Celsius,
+                SensorCategory::Temperature,
+            ),
+        ];
+        let history = SensorHistory::new();
+        let layout = test_layout();
+        let theme = super::super::theme::TuiTheme::default();
+
+        let config = crate::config::PanelConfig {
+            title: "Clamped".into(),
+            filter: None,
+            category: None,
+            max_entries: Some(0),
+            sparklines: true,
+            sort: None,
+        };
+        let panel = build_custom_panel(&snapshot, &history, &config, &layout, &theme).unwrap();
+        assert_eq!(panel.lines.len(), 1); // clamped to 1
     }
 }
