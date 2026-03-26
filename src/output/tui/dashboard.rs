@@ -1150,15 +1150,24 @@ fn build_custom_panel<'a>(
     layout: &LayoutParams,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
-    let pattern = config
-        .filter
-        .as_ref()
-        .and_then(|f| glob::Pattern::new(f).ok());
+    let pattern = config.filter.as_ref().map(|f| {
+        glob::Pattern::new(f).unwrap_or_else(|e| {
+            log::warn!("Invalid dashboard panel glob '{}': {e}", f);
+            glob::Pattern::new("__invalid__").unwrap() // matches nothing
+        })
+    });
 
-    let category = config
-        .category
-        .as_ref()
-        .and_then(|c| crate::config::parse_category(c));
+    let category = config.category.as_ref().and_then(|c| {
+        let parsed = crate::config::parse_category(c);
+        if parsed.is_none() {
+            log::warn!("Unknown dashboard panel category '{c}'");
+        }
+        parsed
+    });
+    // If category was specified but invalid, show nothing for this panel
+    if config.category.is_some() && category.is_none() {
+        return None;
+    }
 
     let match_opts = glob::MatchOptions {
         require_literal_separator: false,
