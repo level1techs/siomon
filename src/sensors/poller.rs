@@ -261,6 +261,9 @@ fn discover_all_sources(
                 dio_sources.push(Box::new(crate::sensors::i2c::pmbus::PmbusSource::discover(
                     &buses,
                 )));
+                dio_sources.push(Box::new(
+                    crate::sensors::i2c::ddr5_temp::Ddr5TempSource::discover(),
+                ));
                 log::info!("I2C: enabled ({} buses)", buses.len());
 
                 dio_sources

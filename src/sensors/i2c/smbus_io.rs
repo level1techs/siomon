@@ -13,6 +13,7 @@ const I2C_SMBUS_WRITE: u8 = 0;
 // SMBus transaction sizes
 const I2C_SMBUS_BYTE_DATA: u32 = 2;
 const I2C_SMBUS_WORD_DATA: u32 = 3;
+const I2C_SMBUS_I2C_BLOCK_DATA: u32 = 8;
 
 /// Argument structure for the I2C_SMBUS ioctl.
 #[repr(C)]
@@ -97,6 +98,36 @@ impl SmbusDevice {
         }
 
         Ok(())
+    }
+
+    /// Read a block of up to 32 bytes starting at `register` via
+    /// SMBus I2C block-data protocol.
+    ///
+    /// Returns the bytes actually read. The kernel limits each transfer
+    /// to [`I2C_SMBUS_BLOCK_MAX`] (32) bytes.
+    pub fn read_i2c_block_data(&self, register: u8, length: u8) -> std::io::Result<Vec<u8>> {
+        let len = length.min(32);
+        let mut data = I2cSmbusData { block: [0u8; 34] };
+        // block[0] holds the requested length for I2C block reads.
+        // SAFETY: We just initialized the union with the block variant above.
+        unsafe { data.block[0] = len };
+
+        let mut args = I2cSmbusIoctlData {
+            read_write: I2C_SMBUS_READ,
+            command: register,
+            size: I2C_SMBUS_I2C_BLOCK_DATA,
+            data: &mut data,
+        };
+
+        let ret = unsafe { libc::ioctl(self.file.as_raw_fd(), I2C_SMBUS, &mut args as *mut _) };
+        if ret < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let actual_len = unsafe { data.block[0] } as usize;
+        let actual_len = actual_len.min(len as usize);
+        let bytes = unsafe { data.block[1..1 + actual_len].to_vec() };
+        Ok(bytes)
     }
 
     /// Read a 16-bit word from `register` via SMBus word-data protocol.

@@ -13,6 +13,7 @@ pub mod memory;
 pub mod motherboard;
 pub mod network;
 pub mod pci;
+pub mod spd;
 pub mod storage;
 pub mod usb;
 

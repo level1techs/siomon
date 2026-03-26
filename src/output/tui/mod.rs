@@ -6,19 +6,21 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::Terminal;
 
+use crate::model::memory::MemoryInfo;
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::sensors::poller::PollStatsState;
 
 mod dashboard;
+mod dimm_view;
 pub mod theme;
 
 use theme::{ColorLevel, TuiTheme};
@@ -27,6 +29,7 @@ use theme::{ColorLevel, TuiTheme};
 enum ViewMode {
     Tree,
     Dashboard,
+    Dimm,
 }
 
 /// Static system info gathered once at TUI startup for the dashboard header.
@@ -210,6 +213,7 @@ pub fn run(
     alert_rules: Vec<crate::sensors::alerts::AlertRule>,
     theme: TuiTheme,
     dashboard_config: &crate::config::DashboardConfig,
+    memory_info: &MemoryInfo,
 ) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -241,6 +245,7 @@ pub fn run(
         alert_rules,
         &theme,
         dashboard_config,
+        memory_info,
     );
 
     // Best-effort cleanup: disable mouse modes before leaving alternate screen
@@ -253,6 +258,7 @@ pub fn run(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &Arc<RwLock<HashMap<SensorId, SensorReading>>>,
@@ -261,6 +267,7 @@ fn run_loop(
     alert_rules: Vec<crate::sensors::alerts::AlertRule>,
     theme: &TuiTheme,
     dashboard_config: &crate::config::DashboardConfig,
+    memory_info: &MemoryInfo,
 ) -> io::Result<()> {
     let start = Instant::now();
     let sys_summary = SystemSummary::gather();
@@ -403,6 +410,16 @@ fn run_loop(
                     &sys_summary,
                 )?;
             }
+            ViewMode::Dimm => {
+                dimm_view::render(
+                    terminal,
+                    memory_info,
+                    &snapshot,
+                    &history,
+                    &elapsed_str,
+                    theme,
+                )?;
+            }
         }
 
         // Wait for next tick or meaningful input event.
@@ -461,11 +478,15 @@ fn run_loop(
                                     view_mode = match view_mode {
                                         ViewMode::Tree => ViewMode::Dashboard,
                                         ViewMode::Dashboard => ViewMode::Tree,
+                                        ViewMode::Dimm => ViewMode::Dashboard,
                                     };
                                 }
                                 KeyCode::Char('t') if !colors_locked => {
                                     theme_idx = (theme_idx + 1) % theme_names.len();
                                     theme = TuiTheme::from_name(theme_names[theme_idx]);
+                                }
+                                KeyCode::Char('m') => {
+                                    view_mode = ViewMode::Dimm;
                                 }
                                 KeyCode::Char('/') => {
                                     // Switch to tree view if in dashboard

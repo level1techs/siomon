@@ -1,6 +1,8 @@
 use crate::model::memory::{DimmInfo, MemoryInfo, MemoryType};
 use crate::parsers::smbios;
-use crate::platform::procfs;
+use crate::platform::{procfs, sysfs};
+
+use std::path::Path;
 
 pub fn collect() -> MemoryInfo {
     let meminfo = procfs::parse_meminfo();
@@ -10,12 +12,17 @@ pub fn collect() -> MemoryInfo {
     let swap_total_bytes = meminfo.get("SwapTotal").copied().unwrap_or(0);
     let swap_free_bytes = meminfo.get("SwapFree").copied().unwrap_or(0);
 
-    let dimms = collect_dimms();
+    let mut dimms = collect_dimms();
     let populated_slots = if dimms.is_empty() {
         None
     } else {
         Some(dimms.len() as u32)
     };
+
+    // Enrich DIMMs with SPD EEPROM data on supported boards.
+    if is_wrx90e() {
+        enrich_dimms_with_spd(&mut dimms);
+    }
 
     MemoryInfo {
         total_bytes,
@@ -26,6 +33,46 @@ pub fn collect() -> MemoryInfo {
         total_slots: None,
         populated_slots,
         dimms,
+    }
+}
+
+/// Check if this is an ASUS WRX90E board (SPD via DesignWare I2C).
+fn is_wrx90e() -> bool {
+    sysfs::read_string_optional(Path::new("/sys/class/dmi/id/board_name"))
+        .map(|n| n.to_lowercase().contains("wrx90e"))
+        .unwrap_or(false)
+}
+
+/// Read SPD EEPROMs and match them to SMBIOS DIMM entries by serial number.
+fn enrich_dimms_with_spd(dimms: &mut [DimmInfo]) {
+    let spd_results = super::spd::read_wrx90e_spd();
+    if spd_results.is_empty() {
+        return;
+    }
+
+    log::info!(
+        "SPD: enriching {} DIMM(s) with {} SPD result(s)",
+        dimms.len(),
+        spd_results.len()
+    );
+
+    for (spd_serial, spd_data) in spd_results {
+        // Match by serial number (SMBIOS stores as ASCII, SPD as 4-byte hex).
+        if let Some(dimm) = dimms.iter_mut().find(|d| {
+            d.serial_number
+                .as_ref()
+                .is_some_and(|sn| sn.eq_ignore_ascii_case(&spd_serial))
+        }) {
+            log::info!(
+                "SPD: matched serial {} -> {} ({})",
+                spd_serial,
+                dimm.locator,
+                dimm.bank_locator.as_deref().unwrap_or("?")
+            );
+            dimm.spd = Some(spd_data);
+        } else {
+            log::debug!("SPD: no SMBIOS match for serial {}", spd_serial);
+        }
     }
 }
 
@@ -74,6 +121,7 @@ fn convert_smbios_devices(devices: &[smbios::MemoryDeviceEntry]) -> Vec<DimmInfo
                 total_width_bits: dev.total_width_bits,
                 ecc,
                 rank: dev.rank,
+                spd: None,
             })
         })
         .collect()
@@ -289,6 +337,7 @@ impl DimmBuilder {
             total_width_bits: self.total_width_bits,
             ecc,
             rank: self.rank,
+            spd: None,
         })
     }
 }

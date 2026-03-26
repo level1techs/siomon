@@ -110,6 +110,9 @@ fn run_monitor(
         );
         let _handle = poller.spawn();
 
+        // Collect static memory/DIMM info for the TUI DIMM view.
+        let memory_info = collectors::memory::collect();
+
         // Give poller a moment to collect initial data
         std::thread::sleep(std::time::Duration::from_millis(300));
 
@@ -139,6 +142,7 @@ fn run_monitor(
             alert_rules,
             theme,
             &config.dashboard,
+            &memory_info,
         ) {
             eprintln!("TUI error: {e}");
         }
