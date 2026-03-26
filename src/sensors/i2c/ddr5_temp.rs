@@ -1,20 +1,20 @@
 //! DDR5 DIMM temperature sensors via DesignWare I2C buses.
 //!
-//! On AMD WRX90E, the DesignWare I2C controllers bypass the FCH's SPD mux
+//! On whitelisted AMD boards, the DesignWare I2C controllers bypass the FCH's
+//! SPD mux
 //! and expose three temperature sensors per DIMM:
 //!
 //! - **Hub** (0x50–0x53): SPD5118 hub die temperature
 //! - **TS0** (0x30–0x33): DRAM die / sub-channel A temperature (TS5111)
 //! - **TS1** (0x10–0x13): DRAM die / sub-channel B temperature (TS5111)
 //!
-//! Currently scoped to the ASUS WRX90E-SAGE SE board.
+//! This path is restricted to an explicit board whitelist so direct probing
+//! stays off unknown systems.
 
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
-use crate::platform::sysfs;
+use crate::sensors::i2c::amd_ddr5;
 use crate::sensors::i2c::bus_scan::{self, I2cAdapterType, I2cBus};
 use crate::sensors::i2c::smbus_io::SmbusDevice;
-
-use std::path::Path;
 
 /// MR0 — device type register. 0x51 for both SPD5118 and TS5111.
 const MR0_DEVICE_TYPE: u8 = 0x00;
@@ -28,15 +28,11 @@ const JEDEC_DDR5_DEVICE_ID: u8 = 0x51;
 /// Resolution of fractional temperature bits (°C per LSB).
 const TEMP_LSB: f64 = 0.0625;
 
-/// WRX90E-specific DesignWare I2C bus numbers.
-const WRX90E_SPD_BUSES: &[u32] = &[1, 2];
-
 /// DDR5 I2C address ranges for each sensor type.
 const HUB_ADDR_BASE: u16 = 0x50; // SPD5118 hub
 const TS0_ADDR_BASE: u16 = 0x30; // TS5111 sub-channel A
 const TS1_ADDR_BASE: u16 = 0x10; // TS5111 sub-channel B
-const SLOTS_PER_BUS: u16 = 4;
-
+const HUB_ADDR_COUNT: u16 = 4;
 /// Type of DDR5 temperature sensor.
 #[derive(Debug, Clone, Copy)]
 enum SensorType {
@@ -90,25 +86,35 @@ pub struct Ddr5TempSource {
 }
 
 impl Ddr5TempSource {
-    /// Discover DDR5 temperature sensors on WRX90E DesignWare I2C buses.
+    /// Discover DDR5 temperature sensors on whitelisted AMD DesignWare I2C
+    /// buses.
     ///
-    /// Returns an empty source on non-WRX90E boards or if no devices are found.
+    /// Returns an empty source on unsupported boards or if no devices are found.
     pub fn discover() -> Self {
-        if !is_wrx90e() {
+        let Some(board) = amd_ddr5::detect_board() else {
+            log::debug!("DDR5 temp: skipping probe on unsupported board");
             return Self {
                 sensors: Vec::new(),
             };
-        }
+        };
 
         let all_buses = bus_scan::enumerate_buses();
+        let candidate_bus_nums = amd_ddr5::designware_bus_nums(board, &all_buses);
+        if let Some(board_name) = amd_ddr5::board_name() {
+            log::debug!(
+                "DDR5 temp: supported board '{}' candidate DesignWare buses {:?}",
+                board_name,
+                candidate_bus_nums
+            );
+        }
         let dw_buses: Vec<&I2cBus> = all_buses
             .iter()
             .filter(|b| b.adapter_type == I2cAdapterType::DesignWare)
-            .filter(|b| WRX90E_SPD_BUSES.contains(&b.bus_num))
+            .filter(|b| candidate_bus_nums.contains(&b.bus_num))
             .collect();
 
         if dw_buses.is_empty() {
-            log::debug!("DDR5 temp: no WRX90E DesignWare buses found");
+            log::debug!("DDR5 temp: no whitelisted AMD DDR5 DesignWare buses found");
             return Self {
                 sensors: Vec::new(),
             };
@@ -118,10 +124,17 @@ impl Ddr5TempSource {
         let mut dimm_index: u32 = 0;
 
         for bus in &dw_buses {
-            for slot in 0..SLOTS_PER_BUS {
+            log::debug!("DDR5 temp: scanning bus {}", bus.bus_num);
+            for slot in 0..board.slots_per_bus {
                 // Probe hub first to confirm a DIMM exists in this slot.
                 let hub_addr = HUB_ADDR_BASE + slot;
                 if !probe_ddr5_sensor(bus.bus_num, hub_addr) {
+                    log::debug!(
+                        "DDR5 temp: no hub sensor on bus {} slot {} addr {:#04x}",
+                        bus.bus_num,
+                        slot,
+                        hub_addr
+                    );
                     continue;
                 }
 
@@ -225,27 +238,69 @@ impl crate::sensors::SensorSource for Ddr5TempSource {
 /// Resets MR11 to page 0 first, since a prior aborted SPD EEPROM read may
 /// have left the device with volatile registers disabled.
 fn probe_ddr5_sensor(bus: u32, addr: u16) -> bool {
-    let Ok(dev) = SmbusDevice::open(bus, addr) else {
-        return false;
+    let dev = match SmbusDevice::open(bus, addr) {
+        Ok(dev) => dev,
+        Err(e) => {
+            log::debug!(
+                "DDR5 temp: open failed on bus {} addr {:#04x}: {}",
+                bus,
+                addr,
+                e
+            );
+            return false;
+        }
     };
 
     // Ensure page 0 is active so volatile registers are accessible.
-    if (HUB_ADDR_BASE..=HUB_ADDR_BASE + SLOTS_PER_BUS).contains(&addr) {
+    if (HUB_ADDR_BASE..HUB_ADDR_BASE + HUB_ADDR_COUNT).contains(&addr) {
         let _ = dev.write_byte_data(0x0B, 0x00);
     }
 
-    let Ok(mr0) = dev.read_byte_data(MR0_DEVICE_TYPE) else {
-        return false;
+    let mr0 = match dev.read_byte_data(MR0_DEVICE_TYPE) {
+        Ok(mr0) => mr0,
+        Err(e) => {
+            log::debug!(
+                "DDR5 temp: MR0 read failed on bus {} addr {:#04x}: {}",
+                bus,
+                addr,
+                e
+            );
+            return false;
+        }
     };
     if mr0 != JEDEC_DDR5_DEVICE_ID {
+        log::debug!(
+            "DDR5 temp: MR0 mismatch on bus {} addr {:#04x}: got {:#04x}",
+            bus,
+            addr,
+            mr0
+        );
         return false;
     }
 
     // Verify plausible temperature.
-    if let Ok(raw) = dev.read_word_data(MR_TEMPERATURE) {
-        let masked = raw & 0x1FFF;
-        let temp = masked as f64 * TEMP_LSB;
-        if !(-40.0..=150.0).contains(&temp) {
+    match dev.read_word_data(MR_TEMPERATURE) {
+        Ok(raw) => {
+            let masked = raw & 0x1FFF;
+            let temp = masked as f64 * TEMP_LSB;
+            if !(-40.0..=150.0).contains(&temp) {
+                log::debug!(
+                    "DDR5 temp: implausible temperature on bus {} addr {:#04x}: raw={:#06x} temp={:.2}",
+                    bus,
+                    addr,
+                    raw,
+                    temp
+                );
+                return false;
+            }
+        }
+        Err(e) => {
+            log::debug!(
+                "DDR5 temp: temperature read failed on bus {} addr {:#04x}: {}",
+                bus,
+                addr,
+                e
+            );
             return false;
         }
     }
@@ -269,12 +324,6 @@ fn read_temperature(bus: u32, addr: u16) -> std::io::Result<f64> {
     };
 
     Ok(temp_c)
-}
-
-fn is_wrx90e() -> bool {
-    sysfs::read_string_optional(Path::new("/sys/class/dmi/id/board_name"))
-        .map(|n| n.to_lowercase().contains("wrx90e"))
-        .unwrap_or(false)
 }
 
 #[cfg(test)]

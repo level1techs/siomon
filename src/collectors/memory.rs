@@ -1,8 +1,7 @@
 use crate::model::memory::{DimmInfo, MemoryInfo, MemoryType};
 use crate::parsers::smbios;
-use crate::platform::{procfs, sysfs};
-
-use std::path::Path;
+use crate::platform::procfs;
+use crate::sensors::i2c::amd_ddr5;
 
 pub fn collect() -> MemoryInfo {
     let meminfo = procfs::parse_meminfo();
@@ -20,7 +19,7 @@ pub fn collect() -> MemoryInfo {
     };
 
     // Enrich DIMMs with SPD EEPROM data on supported boards.
-    if is_wrx90e() {
+    if amd_ddr5::detect_board().is_some() {
         enrich_dimms_with_spd(&mut dimms);
     }
 
@@ -36,16 +35,9 @@ pub fn collect() -> MemoryInfo {
     }
 }
 
-/// Check if this is an ASUS WRX90E board (SPD via DesignWare I2C).
-fn is_wrx90e() -> bool {
-    sysfs::read_string_optional(Path::new("/sys/class/dmi/id/board_name"))
-        .map(|n| n.to_lowercase().contains("wrx90e"))
-        .unwrap_or(false)
-}
-
 /// Read SPD EEPROMs and match them to SMBIOS DIMM entries by serial number.
 fn enrich_dimms_with_spd(dimms: &mut [DimmInfo]) {
-    let spd_results = super::spd::read_wrx90e_spd();
+    let spd_results = super::spd::read_amd_ddr5_spd();
     if spd_results.is_empty() {
         return;
     }

@@ -1,14 +1,17 @@
-//! DDR5 SPD EEPROM reader via SPD5118 hub on DesignWare I2C buses.
+//! DDR5 SPD EEPROM reader via SPD5118 hub on whitelisted AMD DesignWare I2C
+//! buses.
 //!
-//! On AMD WRX90E the FCH's piix4_smbus intercepts SPD addresses 0x50–0x57,
+//! On AMD WRX90 boards the FCH's piix4_smbus intercepts SPD addresses 0x50–0x57,
 //! returning garbled EEPROM data instead of SPD5118 management registers.
 //! The DesignWare I2C controllers (populated via ACPI) bypass this mux and
 //! give clean access to the SPD5118 hubs.
 //!
-//! This module is currently scoped to the ASUS WRX90E-SAGE SE board.
+//! This module is scoped to an explicit board whitelist so direct probing stays
+//! off unknown systems.
 
 use crate::model::memory::SpdData;
-use crate::sensors::i2c::bus_scan::{self, I2cAdapterType};
+use crate::sensors::i2c::amd_ddr5;
+use crate::sensors::i2c::bus_scan;
 use crate::sensors::i2c::smbus_io::SmbusDevice;
 
 /// SPD5118 management register addresses.
@@ -31,10 +34,6 @@ const EEPROM_SIZE: usize = 1024;
 const SPD_ADDR_FIRST: u16 = 0x50;
 const SPD_ADDR_LAST: u16 = 0x57;
 
-/// WRX90E-specific: DesignWare I2C buses with SPD5118 access.
-/// Bus 1 carries channels A–D, bus 2 carries channels E–H.
-const WRX90E_SPD_BUSES: &[u32] = &[1, 2];
-
 /// Result of reading one DIMM's SPD EEPROM.
 pub struct SpdDump {
     pub bus: u32,
@@ -42,27 +41,36 @@ pub struct SpdDump {
     pub data: [u8; EEPROM_SIZE],
 }
 
-/// Discover and read SPD EEPROMs on WRX90E DesignWare I2C buses.
+/// Discover and read SPD EEPROMs on whitelisted AMD DesignWare I2C buses.
 ///
 /// Returns parsed `SpdData` paired with the serial number read from SPD
 /// bytes 517–520 for matching against SMBIOS DIMM entries.
-pub fn read_wrx90e_spd() -> Vec<(String, SpdData)> {
+pub fn read_amd_ddr5_spd() -> Vec<(String, SpdData)> {
+    let Some(board) = amd_ddr5::detect_board() else {
+        log::debug!("SPD: skipping AMD DDR5 SPD scan on unsupported board");
+        return Vec::new();
+    };
+
     let buses = bus_scan::enumerate_buses();
-    let dw_buses: Vec<u32> = buses
-        .iter()
-        .filter(|b| b.adapter_type == I2cAdapterType::DesignWare)
-        .filter(|b| WRX90E_SPD_BUSES.contains(&b.bus_num))
-        .map(|b| b.bus_num)
-        .collect();
+    let dw_buses = amd_ddr5::designware_bus_nums(board, &buses);
+
+    if let Some(board_name) = amd_ddr5::board_name() {
+        log::debug!(
+            "SPD: supported board '{}' scanning DesignWare buses {:?}",
+            board_name,
+            dw_buses
+        );
+    }
 
     if dw_buses.is_empty() {
-        log::debug!("SPD: no WRX90E DesignWare I2C buses found");
+        log::debug!("SPD: no whitelisted AMD DDR5 DesignWare I2C buses found");
         return Vec::new();
     }
 
     let mut results = Vec::new();
 
     for &bus in &dw_buses {
+        log::debug!("SPD: scanning bus {}", bus);
         for addr in SPD_ADDR_FIRST..=SPD_ADDR_LAST {
             match read_spd_eeprom(bus, addr) {
                 Some(dump) => {
@@ -78,7 +86,7 @@ pub fn read_wrx90e_spd() -> Vec<(String, SpdData)> {
                     }
                 }
                 None => {
-                    log::debug!("SPD: no SPD5118 at bus {} addr {:#04x}", bus, addr);
+                    log::debug!("SPD: no readable SPD5118 at bus {} addr {:#04x}", bus, addr);
                 }
             }
         }
@@ -93,7 +101,13 @@ pub fn read_wrx90e_spd() -> Vec<(String, SpdData)> {
 /// MR11\[2:0\] and read 128 bytes from NVM (registers 0x80–0xFF).
 /// Always restores page 0 when done.
 fn read_spd_eeprom(bus: u32, addr: u16) -> Option<SpdDump> {
-    let dev = SmbusDevice::open(bus, addr).ok()?;
+    let dev = match SmbusDevice::open(bus, addr) {
+        Ok(dev) => dev,
+        Err(e) => {
+            log::debug!("SPD: open failed on bus {} addr {:#04x}: {}", bus, addr, e);
+            return None;
+        }
+    };
 
     // Ensure page 0 is selected before probing — a prior aborted read may
     // have left MR11 at a non-zero page, which disables volatile register
@@ -101,8 +115,25 @@ fn read_spd_eeprom(bus: u32, addr: u16) -> Option<SpdDump> {
     let _ = dev.write_byte_data(MR11_PAGE_SELECT, 0x00);
 
     // Verify SPD5118 device type.
-    let mr0 = dev.read_byte_data(MR0_DEVICE_TYPE).ok()?;
+    let mr0 = match dev.read_byte_data(MR0_DEVICE_TYPE) {
+        Ok(mr0) => mr0,
+        Err(e) => {
+            log::debug!(
+                "SPD: MR0 read failed on bus {} addr {:#04x}: {}",
+                bus,
+                addr,
+                e
+            );
+            return None;
+        }
+    };
     if mr0 != SPD5118_DEVICE_ID {
+        log::debug!(
+            "SPD: MR0 mismatch on bus {} addr {:#04x}: got {:#04x}",
+            bus,
+            addr,
+            mr0
+        );
         return None;
     }
 

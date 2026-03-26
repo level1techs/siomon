@@ -1,3 +1,4 @@
+pub mod amd_ddr5;
 pub mod bus_scan;
 pub mod ddr5_temp;
 pub mod pmbus;
