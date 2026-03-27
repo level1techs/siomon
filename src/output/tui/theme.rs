@@ -37,6 +37,7 @@ pub fn detect_color_level() -> ColorLevel {
 
 #[derive(Clone, Debug)]
 pub struct TuiTheme {
+    pub name: String,
     pub color_level: ColorLevel,
     pub border: Color,
     pub muted: Color,
@@ -79,6 +80,7 @@ pub struct TuiTheme {
 impl Default for TuiTheme {
     fn default() -> Self {
         Self {
+            name: "default".into(),
             color_level: detect_color_level(),
             border: Color::Gray,
             muted: Color::Gray,
@@ -122,6 +124,7 @@ impl Default for TuiTheme {
 impl TuiTheme {
     pub fn light() -> Self {
         Self {
+            name: "light".into(),
             color_level: detect_color_level(),
             border: Color::DarkGray,
             muted: Color::DarkGray,
@@ -163,6 +166,7 @@ impl TuiTheme {
 
     pub fn high_contrast() -> Self {
         Self {
+            name: "high-contrast".into(),
             color_level: detect_color_level(),
             border: Color::White,
             muted: Color::White,
@@ -204,6 +208,7 @@ impl TuiTheme {
 
     pub fn monochrome() -> Self {
         Self {
+            name: "monochrome".into(),
             color_level: ColorLevel::None,
             border: Color::Reset,
             muted: Color::Reset,
@@ -377,7 +382,7 @@ impl TuiTheme {
     /// Return a color for a sparkline data point based on its normalized position
     /// (0.0 = min in window, 1.0 = max) and the sensor category.
     /// On truecolor terminals, returns smooth RGB gradients.
-    /// On basic terminals, falls back to 3-step ANSI colors.
+    /// On basic terminals, falls back to a single ANSI color per category.
     pub fn sparkline_color(&self, category: SensorCategory, fraction: f64) -> Color {
         let t = fraction.clamp(0.0, 1.0);
 

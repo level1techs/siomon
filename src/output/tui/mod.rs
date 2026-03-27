@@ -266,7 +266,11 @@ fn run_loop(
     let sys_summary = SystemSummary::gather();
     let mut theme = theme.clone();
     let theme_names = ["default", "light", "high-contrast", "monochrome"];
-    let mut theme_idx: usize = 0;
+    // Start cycling from the current theme's position
+    let mut theme_idx: usize = theme_names
+        .iter()
+        .position(|&n| n == theme.name)
+        .unwrap_or(0);
     let mut scroll_offset: usize = 0;
     let mut collapsed: HashSet<String> = HashSet::new();
     let mut cursor: usize = 0;
