@@ -21,7 +21,7 @@ use crate::sensors::poller::PollStatsState;
 mod dashboard;
 pub mod theme;
 
-use theme::TuiTheme;
+use theme::{ColorLevel, TuiTheme};
 
 #[derive(Clone, Copy, PartialEq)]
 enum ViewMode {
@@ -265,6 +265,7 @@ fn run_loop(
     let start = Instant::now();
     let sys_summary = SystemSummary::gather();
     let mut theme = theme.clone();
+    let colors_locked = theme.name == "monochrome" && theme.color_level == ColorLevel::None;
     let theme_names = ["default", "light", "high-contrast", "monochrome"];
     // Start cycling from the current theme's position
     let mut theme_idx: usize = theme_names
@@ -462,7 +463,7 @@ fn run_loop(
                                         ViewMode::Dashboard => ViewMode::Tree,
                                     };
                                 }
-                                KeyCode::Char('t') => {
+                                KeyCode::Char('t') if !colors_locked => {
                                     theme_idx = (theme_idx + 1) % theme_names.len();
                                     theme = TuiTheme::from_name(theme_names[theme_idx]);
                                 }

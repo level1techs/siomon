@@ -590,8 +590,8 @@ fn build_cpu_panel<'a>(
     cores.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
 
     if !cores.is_empty() {
-        // Per-core heatmap grid: each core is a colored █ block.
-        // Grid width adapts: ~24 cores per row for 3-col, more for wider panels.
+        // Per-core heatmap grid: each core is a colored ██ block.
+        // Fixed at 24 cores per row (fits 3-col layout with 2-char-wide blocks).
         let cols_per_row = 24usize;
         for chunk in cores.chunks(cols_per_row) {
             let spans: Vec<Span<'_>> = chunk

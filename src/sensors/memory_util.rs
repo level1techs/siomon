@@ -19,7 +19,7 @@ impl MemoryUtilSource {
         let ram_used_mb = (info.total_kb.saturating_sub(info.available_kb)) / 1024;
         let ram_total_mb = info.total_kb / 1024;
         let ram_util = if info.total_kb > 0 {
-            100.0 * (1.0 - (info.available_kb as f64 / info.total_kb as f64))
+            (100.0 * (1.0 - (info.available_kb as f64 / info.total_kb as f64))).clamp(0.0, 100.0)
         } else {
             0.0
         };
@@ -151,6 +151,10 @@ fn parse_meminfo() -> Option<MemInfo> {
             "SwapFree:" => swap_free = val,
             _ => {}
         }
+    }
+
+    if total == 0 {
+        return None;
     }
 
     Some(MemInfo {
