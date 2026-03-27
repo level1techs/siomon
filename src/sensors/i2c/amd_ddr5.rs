@@ -36,10 +36,18 @@ const ASUS_TRX50_SAGE_WIFI_A: AmdDdr5Board = AmdDdr5Board {
     slots_per_bus: 4,
 };
 
+const GIGABYTE_TRX50_AI_TOP: AmdDdr5Board = AmdDdr5Board {
+    model: "Gigabyte TRX50 AI TOP",
+    match_substrings: &["trx50", "ai top"],
+    designware_buses: &[1, 2],
+    slots_per_bus: 4,
+};
+
 const SUPPORTED_BOARDS: &[AmdDdr5Board] = &[
     ASUS_WRX90E_SAGE_SE,
     ASROCK_WRX90_WS_EVO,
     ASUS_TRX50_SAGE_WIFI_A,
+    GIGABYTE_TRX50_AI_TOP,
 ];
 
 /// Read the DMI board name used for board-whitelist detection.
@@ -110,6 +118,13 @@ mod tests {
         let board = lookup_board("Pro WS TRX50-SAGE WIFI A").unwrap();
         assert_eq!(board.model, "ASUS Pro WS TRX50-SAGE WIFI A");
         assert_eq!(board.designware_buses, &[0, 1]);
+    }
+
+    #[test]
+    fn matches_gigabyte_trx50_ai_top() {
+        let board = lookup_board("TRX50 AI TOP").unwrap();
+        assert_eq!(board.model, "Gigabyte TRX50 AI TOP");
+        assert_eq!(board.designware_buses, &[1, 2]);
     }
 
     #[test]
