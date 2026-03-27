@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use std::io::{self, Stdout};
 
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, LineGauge, Paragraph};
+use ratatui::Terminal;
 
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading};
 
-use super::{SensorHistory, SystemSummary, format_precision, sparkline_spans, theme::TuiTheme};
+use super::{format_precision, sparkline_spans, theme::TuiTheme, SensorHistory, SystemSummary};
 
 struct LayoutParams {
     num_columns: u8,
@@ -362,30 +362,18 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
     }
 
     // Truncated panels (have more data to show) expand to fill remaining space.
-    // Non-truncated panels (showing all their data) get tight sizing.
-    // If nothing is truncated, spread remaining space evenly across all panels
-    // so no single gap pools at the bottom.
-    let has_truncated = panels.iter().any(|p| p.truncated);
-    let constraints: Vec<Constraint> = if has_truncated {
-        panels
-            .iter()
-            .map(|p| {
-                if p.truncated {
-                    Constraint::Fill(1)
-                } else {
-                    Constraint::Length(p.content.height() + 2)
-                }
-            })
-            .collect()
-    } else {
-        // No truncation — all data is visible. Use Min(content) so each panel
-        // gets at least its content height, then remaining space distributes
-        // proportionally rather than pooling at the bottom.
-        panels
-            .iter()
-            .map(|p| Constraint::Min(p.content.height() + 2))
-            .collect()
-    };
+    // Non-truncated panels get tight sizing. This ensures panels with more
+    // data (e.g., many thermal sensors) grow into space freed by smaller panels.
+    let constraints: Vec<Constraint> = panels
+        .iter()
+        .map(|p| {
+            if p.truncated {
+                Constraint::Fill(1)
+            } else {
+                Constraint::Length(p.content.height() + 2)
+            }
+        })
+        .collect();
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1095,7 +1083,13 @@ fn build_fans_panel<'a>(
 
     fans.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
     let total_fans = fans.len();
-    fans.truncate(max_entries * 2);
+    let use_two_col = total_fans > 6;
+    let effective_max = if use_two_col {
+        max_entries * 2
+    } else {
+        max_entries
+    };
+    fans.truncate(effective_max);
 
     let rows: Vec<PanelRow<'_>> = fans
         .iter()
@@ -1108,12 +1102,18 @@ fn build_fans_panel<'a>(
         })
         .collect();
 
+    let content = if use_two_col {
+        PanelContent::MultiCol { rows, columns: 2 }
+    } else {
+        PanelContent::Mixed(rows)
+    };
+
     Some(Panel {
         title: "Fans".into(),
         headline: None,
-        content: PanelContent::MultiCol { rows, columns: 2 },
+        content,
         column: Column::Left,
-        truncated: total_fans > max_entries * 2,
+        truncated: total_fans > effective_max,
     })
 }
 
@@ -1187,8 +1187,14 @@ fn build_cpu_freq_panel<'a>(
 
     freqs.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
     let total = freqs.len();
-    // 2-column layout: allow twice as many entries since each column holds half
-    freqs.truncate(max_entries * 2);
+    // Only use 2-column layout when entries exceed single-column capacity
+    let use_two_col = total > max_entries;
+    let effective_max = if use_two_col {
+        max_entries * 2
+    } else {
+        max_entries
+    };
+    freqs.truncate(effective_max);
 
     // Use the global max observed frequency as the gauge ceiling
     let max_freq = freqs
@@ -1216,12 +1222,18 @@ fn build_cpu_freq_panel<'a>(
         })
         .collect();
 
+    let content = if use_two_col {
+        PanelContent::MultiCol { rows, columns: 2 }
+    } else {
+        PanelContent::Mixed(rows)
+    };
+
     Some(Panel {
         title: "CPU Freq".into(),
         headline: None,
-        content: PanelContent::MultiCol { rows, columns: 2 },
+        content,
         column: Column::Center,
-        truncated: total > max_entries * 2,
+        truncated: total > effective_max,
     })
 }
 
