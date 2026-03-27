@@ -12,6 +12,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
@@ -28,11 +29,50 @@ enum ViewMode {
     Dashboard,
 }
 
+/// Static system info gathered once at TUI startup for the dashboard header.
+pub(crate) struct SystemSummary {
+    pub hostname: String,
+    pub kernel: String,
+    pub cpu_model: String,
+}
+
+impl SystemSummary {
+    fn gather() -> Self {
+        let hostname = std::fs::read_to_string("/etc/hostname")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let kernel = std::fs::read_to_string("/proc/version")
+            .unwrap_or_default()
+            .split_whitespace()
+            .nth(2)
+            .unwrap_or("")
+            .to_string();
+        let cpu_model = std::fs::read_to_string("/proc/cpuinfo")
+            .unwrap_or_default()
+            .lines()
+            .find(|l| l.starts_with("model name"))
+            .and_then(|l| l.split(':').nth(1))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        Self {
+            hostname,
+            kernel,
+            cpu_model,
+        }
+    }
+}
+
 /// Maximum number of data points to retain per sensor for sparklines.
 const HISTORY_LEN: usize = 300;
 
 /// Unicode block characters for sparkline rendering, from lowest to highest.
 const SPARK_CHARS: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Static string slices for zero-allocation sparkline Span construction.
+const SPARK_STRS: &[&str] = &[
+    "\u{2581}", "\u{2582}", "\u{2583}", "\u{2584}", "\u{2585}", "\u{2586}", "\u{2587}", "\u{2588}",
+];
 
 /// Render a `VecDeque<f64>` as a sparkline string of `width` characters.
 /// Values are normalized to the min/max range of the visible window.
@@ -76,6 +116,60 @@ pub(crate) fn sparkline_str(data: &VecDeque<f64>, width: usize) -> String {
         out.push(SPARK_CHARS[idx.min(7)]);
     }
     out
+}
+
+/// Render a sparkline as a `Vec<Span>` with per-character gradient coloring.
+/// Each character gets a color based on its normalized value and the sensor category.
+pub(crate) fn sparkline_spans<'a>(
+    data: &VecDeque<f64>,
+    width: usize,
+    category: SensorCategory,
+    theme: &TuiTheme,
+) -> Vec<Span<'a>> {
+    if data.is_empty() || width == 0 {
+        return Vec::new();
+    }
+    let start = data.len().saturating_sub(width);
+
+    // First pass: find min/max over finite values in the window.
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    let mut has_finite = false;
+    for &v in data.iter().skip(start) {
+        if v.is_finite() {
+            has_finite = true;
+            if v < min {
+                min = v;
+            }
+            if v > max {
+                max = v;
+            }
+        }
+    }
+    if !has_finite {
+        return Vec::new();
+    }
+    let range = max - min;
+
+    // Second pass: build per-character spans with gradient colors.
+    let mut spans = Vec::with_capacity(width);
+    for &v in data.iter().skip(start) {
+        if !v.is_finite() {
+            continue;
+        }
+        let fraction = if range < f64::EPSILON {
+            3.0 / 7.0 // flat line -> mid height ('▄')
+        } else {
+            (v - min) / range
+        };
+        let idx = (fraction * 7.0).round() as usize;
+        let color = theme.sparkline_color(category, fraction);
+        spans.push(Span::styled(
+            SPARK_STRS[idx.min(7)],
+            Style::default().fg(color),
+        ));
+    }
+    spans
 }
 
 /// Per-sensor history ring buffer for sparklines.
@@ -169,6 +263,10 @@ fn run_loop(
     dashboard_config: &crate::config::DashboardConfig,
 ) -> io::Result<()> {
     let start = Instant::now();
+    let sys_summary = SystemSummary::gather();
+    let mut theme = theme.clone();
+    let theme_names = ["default", "light", "high-contrast", "monochrome"];
+    let mut theme_idx: usize = 0;
     let mut scroll_offset: usize = 0;
     let mut collapsed: HashSet<String> = HashSet::new();
     let mut cursor: usize = 0;
@@ -230,7 +328,7 @@ fn run_loop(
             ViewMode::Tree => {
                 let filter_lc = filter_query.to_ascii_lowercase();
                 let (display_rows, group_indices_new, collapse_key_vec_new) =
-                    build_rows(&snapshot, &collapsed, &filter_lc, &history, theme);
+                    build_rows(&snapshot, &collapsed, &filter_lc, &history, &theme);
                 group_indices = group_indices_new;
                 collapse_key_vec = collapse_key_vec_new;
                 last_total_rows = display_rows.len();
@@ -284,7 +382,7 @@ fn run_loop(
                     poll_warning: &poll_warning,
                     filter_mode,
                     filter_query: &filter_query,
-                    theme,
+                    theme: &theme,
                 };
                 draw(terminal, display_rows, &ctx)?;
             }
@@ -295,8 +393,9 @@ fn run_loop(
                     &history,
                     &elapsed_str,
                     sensor_count,
-                    theme,
+                    &theme,
                     dashboard_config,
+                    &sys_summary,
                 )?;
             }
         }
@@ -358,6 +457,10 @@ fn run_loop(
                                         ViewMode::Tree => ViewMode::Dashboard,
                                         ViewMode::Dashboard => ViewMode::Tree,
                                     };
+                                }
+                                KeyCode::Char('t') => {
+                                    theme_idx = (theme_idx + 1) % theme_names.len();
+                                    theme = TuiTheme::from_name(theme_names[theme_idx]);
                                 }
                                 KeyCode::Char('/') => {
                                     // Switch to tree view if in dashboard

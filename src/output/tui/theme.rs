@@ -2,8 +2,42 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::model::sensor::{SensorCategory, SensorReading};
 
+/// Terminal color capability level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ColorLevel {
+    None = 0,
+    Basic = 1,     // 16 ANSI colors
+    Color256 = 2,  // 256-color palette
+    TrueColor = 3, // 24-bit RGB
+}
+
+/// Detect terminal color capability from environment variables.
+pub fn detect_color_level() -> ColorLevel {
+    if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+        return ColorLevel::None;
+    }
+    if let Ok(ct) = std::env::var("COLORTERM") {
+        if ct == "truecolor" || ct == "24bit" {
+            return ColorLevel::TrueColor;
+        }
+    }
+    if let Ok(term) = std::env::var("TERM") {
+        if term == "dumb" {
+            return ColorLevel::None;
+        }
+        if term.ends_with("direct") {
+            return ColorLevel::TrueColor;
+        }
+        if term.contains("256color") {
+            return ColorLevel::Color256;
+        }
+    }
+    ColorLevel::Basic
+}
+
 #[derive(Clone, Debug)]
 pub struct TuiTheme {
+    pub color_level: ColorLevel,
     pub border: Color,
     pub muted: Color,
     pub cursor_bg: Color,
@@ -27,11 +61,25 @@ pub struct TuiTheme {
     pub search_inactive_fg: Color,
     pub search_inactive_bg: Color,
     pub header_bg: Color,
+    // Per-panel accent colors
+    pub panel_cpu: Color,
+    pub panel_thermal: Color,
+    pub panel_memory: Color,
+    pub panel_power: Color,
+    pub panel_storage: Color,
+    pub panel_network: Color,
+    pub panel_fans: Color,
+    pub panel_gpu: Color,
+    pub panel_voltage: Color,
+    pub panel_frequency: Color,
+    pub panel_platform: Color,
+    pub panel_errors: Color,
 }
 
 impl Default for TuiTheme {
     fn default() -> Self {
         Self {
+            color_level: detect_color_level(),
             border: Color::Gray,
             muted: Color::Gray,
             cursor_bg: Color::Gray,
@@ -55,6 +103,18 @@ impl Default for TuiTheme {
             search_inactive_fg: Color::Yellow,
             search_inactive_bg: Color::Gray,
             header_bg: Color::Gray,
+            panel_cpu: Color::Cyan,
+            panel_thermal: Color::LightRed,
+            panel_memory: Color::Blue,
+            panel_power: Color::Magenta,
+            panel_storage: Color::LightYellow,
+            panel_network: Color::Green,
+            panel_fans: Color::LightCyan,
+            panel_gpu: Color::LightGreen,
+            panel_voltage: Color::LightBlue,
+            panel_frequency: Color::LightMagenta,
+            panel_platform: Color::Yellow,
+            panel_errors: Color::Red,
         }
     }
 }
@@ -62,6 +122,7 @@ impl Default for TuiTheme {
 impl TuiTheme {
     pub fn light() -> Self {
         Self {
+            color_level: detect_color_level(),
             border: Color::DarkGray,
             muted: Color::DarkGray,
             cursor_bg: Color::DarkGray,
@@ -85,11 +146,24 @@ impl TuiTheme {
             search_inactive_fg: Color::Blue,
             search_inactive_bg: Color::DarkGray,
             header_bg: Color::DarkGray,
+            panel_cpu: Color::Blue,
+            panel_thermal: Color::Red,
+            panel_memory: Color::Magenta,
+            panel_power: Color::DarkGray,
+            panel_storage: Color::Green,
+            panel_network: Color::Cyan,
+            panel_fans: Color::Black,
+            panel_gpu: Color::Red,
+            panel_voltage: Color::Blue,
+            panel_frequency: Color::Cyan,
+            panel_platform: Color::DarkGray,
+            panel_errors: Color::Red,
         }
     }
 
     pub fn high_contrast() -> Self {
         Self {
+            color_level: detect_color_level(),
             border: Color::White,
             muted: Color::White,
             cursor_bg: Color::DarkGray,
@@ -113,11 +187,24 @@ impl TuiTheme {
             search_inactive_fg: Color::LightYellow,
             search_inactive_bg: Color::DarkGray,
             header_bg: Color::DarkGray,
+            panel_cpu: Color::LightCyan,
+            panel_thermal: Color::LightYellow,
+            panel_memory: Color::LightBlue,
+            panel_power: Color::LightMagenta,
+            panel_storage: Color::LightYellow,
+            panel_network: Color::LightGreen,
+            panel_fans: Color::LightCyan,
+            panel_gpu: Color::LightGreen,
+            panel_voltage: Color::LightBlue,
+            panel_frequency: Color::LightCyan,
+            panel_platform: Color::LightMagenta,
+            panel_errors: Color::LightRed,
         }
     }
 
     pub fn monochrome() -> Self {
         Self {
+            color_level: ColorLevel::None,
             border: Color::Reset,
             muted: Color::Reset,
             cursor_bg: Color::Reset,
@@ -141,6 +228,18 @@ impl TuiTheme {
             search_inactive_fg: Color::Reset,
             search_inactive_bg: Color::Reset,
             header_bg: Color::Reset,
+            panel_cpu: Color::Reset,
+            panel_thermal: Color::Reset,
+            panel_memory: Color::Reset,
+            panel_power: Color::Reset,
+            panel_storage: Color::Reset,
+            panel_network: Color::Reset,
+            panel_fans: Color::Reset,
+            panel_gpu: Color::Reset,
+            panel_voltage: Color::Reset,
+            panel_frequency: Color::Reset,
+            panel_platform: Color::Reset,
+            panel_errors: Color::Reset,
         }
     }
 
@@ -255,6 +354,86 @@ impl TuiTheme {
         Style::default()
             .fg(self.search_inactive_fg)
             .bg(self.search_inactive_bg)
+    }
+
+    pub fn panel_accent(&self, title: &str) -> Color {
+        match title {
+            "CPU" => self.panel_cpu,
+            "Thermal" => self.panel_thermal,
+            "Memory" => self.panel_memory,
+            "Power" => self.panel_power,
+            "Storage" => self.panel_storage,
+            "Network" => self.panel_network,
+            "Fans" => self.panel_fans,
+            "GPU" => self.panel_gpu,
+            "Voltage" => self.panel_voltage,
+            "CPU Freq" => self.panel_frequency,
+            "Platform" => self.panel_platform,
+            "Errors" => self.panel_errors,
+            _ => self.accent,
+        }
+    }
+
+    /// Return a color for a sparkline data point based on its normalized position
+    /// (0.0 = min in window, 1.0 = max) and the sensor category.
+    /// On truecolor terminals, returns smooth RGB gradients.
+    /// On basic terminals, falls back to 3-step ANSI colors.
+    pub fn sparkline_color(&self, category: SensorCategory, fraction: f64) -> Color {
+        let t = fraction.clamp(0.0, 1.0);
+
+        if self.color_level == ColorLevel::None {
+            return Color::Reset;
+        }
+
+        if self.color_level >= ColorLevel::TrueColor {
+            return match category {
+                // Dim red-orange → bright red-orange
+                SensorCategory::Temperature => Color::Rgb(
+                    (120.0 + t * 135.0) as u8,
+                    (40.0 + t * 50.0) as u8,
+                    (20.0 + t * 20.0) as u8,
+                ),
+                // Near-black → bright cyan (idle cores are dark)
+                SensorCategory::Utilization => Color::Rgb(
+                    (5.0 + t * 85.0) as u8,
+                    (15.0 + t * 240.0) as u8,
+                    (20.0 + t * 235.0) as u8,
+                ),
+                // Dim magenta → bright magenta
+                SensorCategory::Power | SensorCategory::Current => Color::Rgb(
+                    (100.0 + t * 155.0) as u8,
+                    (40.0 + t * 40.0) as u8,
+                    (120.0 + t * 135.0) as u8,
+                ),
+                // Dim blue → bright blue
+                SensorCategory::Voltage => Color::Rgb(
+                    (60.0 + t * 80.0) as u8,
+                    (80.0 + t * 100.0) as u8,
+                    (160.0 + t * 95.0) as u8,
+                ),
+                // Dim cyan → bright cyan
+                SensorCategory::Frequency => Color::Rgb(
+                    (40.0 + t * 80.0) as u8,
+                    (140.0 + t * 115.0) as u8,
+                    (160.0 + t * 95.0) as u8,
+                ),
+                // Dim gray → bright white
+                _ => {
+                    let v = (100.0 + t * 155.0) as u8;
+                    Color::Rgb(v, v, v)
+                }
+            };
+        }
+
+        // Basic/256 fallback: single color per category
+        match category {
+            SensorCategory::Temperature => self.panel_thermal,
+            SensorCategory::Utilization => self.panel_cpu,
+            SensorCategory::Power | SensorCategory::Current => self.power,
+            SensorCategory::Voltage => self.voltage,
+            SensorCategory::Frequency => self.info,
+            _ => self.muted,
+        }
     }
 
     pub fn value_style(&self, reading: &SensorReading) -> Style {

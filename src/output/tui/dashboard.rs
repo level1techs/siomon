@@ -6,11 +6,11 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, LineGauge, Paragraph};
 
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading};
 
-use super::{SensorHistory, format_precision, sparkline_str, theme::TuiTheme};
+use super::{SensorHistory, SystemSummary, format_precision, sparkline_spans, theme::TuiTheme};
 
 struct LayoutParams {
     num_columns: u8,
@@ -67,7 +67,6 @@ fn panel_priority(title: &str) -> u8 {
         "Memory" => 2,
         "Voltage" => 3,
         "Fans" => 4,
-        "CPU Cores" => 4, // expendable — summary bar is in CPU panel
         "CPU Freq" => 4,
         "Power" => 5,
         "Storage" => 6,
@@ -79,6 +78,7 @@ fn panel_priority(title: &str) -> u8 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     snapshot: &[(SensorId, SensorReading)],
@@ -87,11 +87,12 @@ pub fn render(
     sensor_count: usize,
     theme: &TuiTheme,
     dashboard_config: &crate::config::DashboardConfig,
+    sys: &SystemSummary,
 ) -> io::Result<()> {
     terminal.draw(|frame| {
         let size = frame.area();
         let estimated_panels = if dashboard_config.panels.is_empty() {
-            13 // built-in: 9 base + cpu_cores + cpu_freq + voltage + gpu in 3-col
+            12
         } else {
             dashboard_config.panels.len()
         };
@@ -107,21 +108,30 @@ pub fn render(
             ])
             .split(size);
 
-        // Header
-        let header = Paragraph::new(format!(
-            " sio dashboard | {sensor_count} sensors | {elapsed_str}"
-        ))
-        .style(theme.accent_style())
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(theme.border_style()),
-        );
+        // Header with system summary
+        let header_text = if sys.cpu_model.is_empty() {
+            format!(
+                " {} | {} | {sensor_count} sensors | {elapsed_str}",
+                sys.hostname, sys.kernel,
+            )
+        } else {
+            format!(
+                " {} | {} | {} | {sensor_count} sensors | {elapsed_str}",
+                sys.hostname, sys.cpu_model, sys.kernel,
+            )
+        };
+        let header = Paragraph::new(header_text)
+            .style(theme.accent_style())
+            .block(
+                Block::default()
+                    .borders(Borders::BOTTOM)
+                    .border_style(theme.border_style()),
+            );
         frame.render_widget(header, outer[0]);
 
         // Status bar
         let status = Paragraph::new(format!(
-            " q: quit | d: tree view | /: search | {sensor_count} sensors | {elapsed_str}"
+            " q: quit | d: tree view | t: theme | /: search | {sensor_count} sensors | {elapsed_str}"
         ))
         .style(theme.status_style());
         frame.render_widget(status, outer[2]);
@@ -175,11 +185,48 @@ pub fn render(
 
 struct Panel<'a> {
     title: String,
-    lines: Vec<Line<'a>>,
+    /// Optional headline value shown after the title (e.g., "54.0°C").
+    headline: Option<String>,
+    content: PanelContent<'a>,
     column: Column,
     /// True if the panel had more data than it could show (was truncated).
     /// Truncated panels expand to fill remaining space; others get tight sizing.
     truncated: bool,
+}
+
+enum PanelContent<'a> {
+    /// Standard text lines (current behavior for most panels).
+    Lines(Vec<Line<'a>>),
+    /// Mixed content: text lines interleaved with gauge widgets.
+    Mixed(Vec<PanelRow<'a>>),
+}
+
+enum PanelRow<'a> {
+    Text(Line<'a>),
+    Gauge {
+        label: String,
+        label_style: Style,
+        ratio: f64,
+        filled_style: Style,
+        unfilled_style: Style,
+    },
+}
+
+impl<'a> PanelContent<'a> {
+    fn height(&self) -> u16 {
+        match self {
+            PanelContent::Lines(lines) => lines.len() as u16,
+            PanelContent::Mixed(rows) => rows.len() as u16,
+        }
+    }
+
+    #[cfg(test)]
+    fn lines(&self) -> &[Line<'a>] {
+        match self {
+            PanelContent::Lines(lines) => lines,
+            PanelContent::Mixed(_) => &[],
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -199,7 +246,7 @@ fn render_wide(
     let errors_height = if errors.is_empty() {
         0
     } else {
-        errors.iter().map(|p| p.lines.len() as u16 + 2).sum::<u16>()
+        errors.iter().map(|p| p.content.height() + 2).sum::<u16>()
     };
 
     let main_split = Layout::default()
@@ -246,7 +293,7 @@ fn render_three_col(
     let errors_height = if errors.is_empty() {
         0
     } else {
-        errors.iter().map(|p| p.lines.len() as u16 + 2).sum::<u16>()
+        errors.iter().map(|p| p.content.height() + 2).sum::<u16>()
     };
 
     let main_split = Layout::default()
@@ -317,7 +364,7 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
                 if p.truncated {
                     Constraint::Fill(1)
                 } else {
-                    Constraint::Length(p.lines.len() as u16 + 2)
+                    Constraint::Length(p.content.height() + 2)
                 }
             })
             .collect()
@@ -327,7 +374,7 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
         // proportionally rather than pooling at the bottom.
         panels
             .iter()
-            .map(|p| Constraint::Min(p.lines.len() as u16 + 2))
+            .map(|p| Constraint::Min(p.content.height() + 2))
             .collect()
     };
 
@@ -337,17 +384,64 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
         .split(area);
 
     for (i, panel) in panels.iter().enumerate() {
+        let accent = theme.panel_accent(&panel.title);
+        let title_text = match &panel.headline {
+            Some(h) => format!(" {} {} ", panel.title, h),
+            None => format!(" {} ", panel.title),
+        };
         let block = Block::default()
-            .title(format!(" {} ", panel.title))
-            .title_style(
-                Style::default()
-                    .fg(theme.label)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .title(title_text)
+            .title_style(Style::default().fg(accent).add_modifier(Modifier::BOLD))
             .borders(Borders::ALL)
-            .border_style(theme.border_style());
-        let paragraph = Paragraph::new(panel.lines.clone()).block(block);
-        frame.render_widget(paragraph, chunks[i]);
+            .border_style(Style::default().fg(accent));
+        match &panel.content {
+            PanelContent::Lines(lines) => {
+                let paragraph = Paragraph::new(lines.clone()).block(block);
+                frame.render_widget(paragraph, chunks[i]);
+            }
+            PanelContent::Mixed(rows) => {
+                // Render the block border first, then render each row inside it.
+                let inner = block.inner(chunks[i]);
+                frame.render_widget(block, chunks[i]);
+                let row_constraints: Vec<Constraint> =
+                    rows.iter().map(|_| Constraint::Length(1)).collect();
+                let row_areas = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(row_constraints)
+                    .split(inner);
+                for (j, row) in rows.iter().enumerate() {
+                    if j >= row_areas.len() {
+                        break;
+                    }
+                    match row {
+                        PanelRow::Text(line) => {
+                            let p = Paragraph::new(line.clone());
+                            frame.render_widget(p, row_areas[j]);
+                        }
+                        PanelRow::Gauge {
+                            label,
+                            label_style,
+                            ratio,
+                            filled_style,
+                            unfilled_style,
+                        } => {
+                            let safe_ratio = if ratio.is_finite() {
+                                ratio.clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            };
+                            let gauge = LineGauge::default()
+                                .ratio(safe_ratio)
+                                .label(label.as_str())
+                                .style(*label_style)
+                                .filled_style(*filled_style)
+                                .unfilled_style(*unfilled_style);
+                            frame.render_widget(gauge, row_areas[j]);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -392,9 +486,6 @@ fn build_panels<'a>(
     }
     // Per-core panels only in 3-col — too many rows for narrow layouts
     if three_col {
-        if let Some(p) = build_cpu_cores_panel(snapshot, history, spark_width, max_entries, theme) {
-            panels.push(p);
-        }
         if let Some(p) = build_cpu_freq_panel(snapshot, history, spark_width, max_entries, theme) {
             panels.push(p);
         }
@@ -412,13 +503,13 @@ fn build_panels<'a>(
 
     // Assign columns based on layout mode
     if three_col {
-        // Left: CPU (fixed), Memory (fixed), CPU Cores (expandable, lots of data)
-        // Center: CPU Freq, Storage, Network, Voltage, GPU
+        // Left: CPU, CPU Freq
+        // Center: Memory, Storage, Network, Voltage, GPU
         // Right: Thermal, Power, Fans, Platform
         for panel in &mut panels {
             panel.column = match panel.title.as_str() {
-                "CPU" | "Memory" | "CPU Cores" => Column::Left,
-                "CPU Freq" | "Storage" | "Network" | "Voltage" | "GPU" => Column::Center,
+                "CPU" | "CPU Freq" => Column::Left,
+                "Memory" | "Storage" | "Network" | "Voltage" | "GPU" => Column::Center,
                 "Thermal" | "Power" | "Fans" | "Platform" => Column::Right,
                 _ => Column::Left, // Errors, etc.
             };
@@ -448,25 +539,27 @@ fn build_cpu_panel<'a>(
         return None;
     }
 
-    let mut lines: Vec<Line<'_>> = Vec::new();
+    let mut rows: Vec<PanelRow<'_>> = Vec::new();
+    let mut headline: Option<String> = None;
 
-    // Total CPU line
-    if let Some((id, reading)) = util_sensors.iter().find(|(id, _)| id.sensor == "total") {
-        let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-        let spark = history
-            .data
-            .get(&key)
-            .map(|buf| sparkline_str(buf, spark_width))
-            .unwrap_or_default();
-        lines.push(Line::from(vec![
-            Span::styled("Total: ", theme.label_style()),
-            Span::styled(
-                format!("{:5.1}%", reading.current),
-                theme.value_style(reading),
-            ),
-            Span::raw("  "),
-            Span::styled(spark, theme.muted_style()),
-        ]));
+    // Total CPU utilization gauge
+    if let Some((_, reading)) = util_sensors.iter().find(|(id, _)| id.sensor == "total") {
+        headline = Some(format!("{:.1}%", reading.current));
+        let accent = theme.panel_cpu;
+        let filled_style = if reading.current > 90.0 {
+            Style::default().fg(theme.crit)
+        } else if reading.current > 70.0 {
+            Style::default().fg(theme.warn)
+        } else {
+            Style::default().fg(accent)
+        };
+        rows.push(PanelRow::Gauge {
+            label_style: theme.label_style(),
+            label: format!("CPU {:.1}%", reading.current),
+            ratio: reading.current / 100.0,
+            filled_style,
+            unfilled_style: Style::default().fg(theme.muted),
+        });
     }
 
     // Per-core dense bar
@@ -478,23 +571,20 @@ fn build_cpu_panel<'a>(
     cores.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
 
     if !cores.is_empty() {
-        let bar: String = cores
-            .iter()
-            .map(|(_, r)| core_block_char(r.current))
-            .collect();
-        // Color the bar by overall utilization
-        let avg_util: f64 = cores.iter().map(|(_, r)| r.current).sum::<f64>() / cores.len() as f64;
-        let bar_color = if avg_util > 80.0 {
-            theme.crit
-        } else if avg_util > 50.0 {
-            theme.warn
-        } else {
-            theme.good
-        };
-        lines.push(Line::from(vec![
-            Span::styled("Cores: ", theme.label_style()),
-            Span::styled(bar, Style::default().fg(bar_color)),
-        ]));
+        // Per-core heatmap grid: each core is a colored █ block.
+        // Grid width adapts: ~24 cores per row for 3-col, more for wider panels.
+        let cols_per_row = 24usize;
+        for chunk in cores.chunks(cols_per_row) {
+            let spans: Vec<Span<'_>> = chunk
+                .iter()
+                .map(|(_, r)| {
+                    let color =
+                        theme.sparkline_color(SensorCategory::Utilization, r.current / 100.0);
+                    Span::styled("\u{2588}\u{2588}", Style::default().fg(color))
+                })
+                .collect();
+            rows.push(PanelRow::Text(Line::from(spans)));
+        }
     }
 
     // RAPL package power (CPU total power draw)
@@ -507,10 +597,10 @@ fn build_cpu_panel<'a>(
     let multi_pkg = rapl_pkgs.len() > 1;
     for (id, reading) in &rapl_pkgs {
         let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-        let spark = history
+        let spark_spans = history
             .data
             .get(&key)
-            .map(|buf| sparkline_str(buf, spark_width))
+            .map(|buf| sparkline_spans(buf, spark_width, reading.category, theme))
             .unwrap_or_default();
         let prec = format_precision(&reading.unit);
         // On multi-socket systems, include the package index to disambiguate
@@ -519,37 +609,25 @@ fn build_cpu_panel<'a>(
         } else {
             "Power: ".into()
         };
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(label, theme.label_style()),
             Span::styled(
                 format!("{:>6.*}{}", prec, reading.current, reading.unit),
                 theme.power_style(),
             ),
             Span::raw("  "),
-            Span::styled(spark, theme.muted_style()),
-        ]));
+        ];
+        spans.extend(spark_spans);
+        rows.push(PanelRow::Text(Line::from(spans)));
     }
 
     Some(Panel {
         title: "CPU".into(),
-        lines,
+        headline,
+        content: PanelContent::Mixed(rows),
         column: Column::Left,
         truncated: false,
     })
-}
-
-fn core_block_char(pct: f64) -> char {
-    if pct >= 87.5 {
-        '\u{2588}' // █
-    } else if pct >= 62.5 {
-        '\u{2593}' // ▓
-    } else if pct >= 37.5 {
-        '\u{2592}' // ▒
-    } else if pct >= 12.5 {
-        '\u{2591}' // ░
-    } else {
-        '\u{00b7}' // ·
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -585,27 +663,33 @@ fn build_thermal_panel<'a>(
         .map(|(id, r)| {
             let label = truncate_label(&r.label, 20);
             let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            let spark = history
+            let spark_spans = history
                 .data
                 .get(&key)
-                .map(|buf| sparkline_str(buf, spark_width))
+                .map(|buf| sparkline_spans(buf, spark_width, r.category, theme))
                 .unwrap_or_default();
             let prec = format_precision(&r.unit);
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("{label:<20} "), theme.label_style()),
                 Span::styled(
                     format!("{:>6.*}{}", prec, r.current, r.unit),
                     theme.value_style(r),
                 ),
                 Span::raw(" "),
-                Span::styled(spark, theme.muted_style()),
-            ])
+            ];
+            spans.extend(spark_spans);
+            Line::from(spans)
         })
         .collect();
 
+    let headline = temps
+        .first()
+        .map(|(_, r)| format!("{:.1}\u{00b0}C", r.current));
+
     Some(Panel {
         title: "Thermal".into(),
-        lines,
+        headline,
+        content: PanelContent::Lines(lines),
         column: Column::Right,
         truncated: total > max_entries,
     })
@@ -626,13 +710,82 @@ fn build_memory_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
-    let mut lines: Vec<Line<'_>> = Vec::new();
+    let mut rows: Vec<PanelRow<'a>> = Vec::new();
+
+    // RAM usage gauge
+    let ram_util = snapshot
+        .iter()
+        .find(|(id, _)| id.source == "memory" && id.sensor == "ram_util");
+    let ram_used = snapshot
+        .iter()
+        .find(|(id, _)| id.source == "memory" && id.sensor == "ram_used");
+    let ram_total = snapshot
+        .iter()
+        .find(|(id, _)| id.source == "memory" && id.sensor == "ram_total");
+
+    if let (Some((_, util)), Some((_, used)), Some((_, total))) = (ram_util, ram_used, ram_total) {
+        let used_gb = used.current / 1024.0;
+        let total_gb = total.current / 1024.0;
+        let label = format!(
+            "RAM  {:.0}/{:.0} GB ({:.0}%)",
+            used_gb, total_gb, util.current
+        );
+        let accent = theme.panel_memory;
+        rows.push(PanelRow::Gauge {
+            label,
+            label_style: theme.label_style(),
+            ratio: util.current / 100.0,
+            filled_style: Style::default().fg(accent),
+            unfilled_style: Style::default().fg(theme.muted),
+        });
+    }
+
+    // Swap usage gauge (only if swap exists)
+    let swap_util = snapshot
+        .iter()
+        .find(|(id, _)| id.source == "memory" && id.sensor == "swap_util");
+    let swap_used = snapshot
+        .iter()
+        .find(|(id, _)| id.source == "memory" && id.sensor == "swap_used");
+    let swap_total = snapshot
+        .iter()
+        .find(|(id, _)| id.source == "memory" && id.sensor == "swap_total");
+
+    if let (Some((_, util)), Some((_, used)), Some((_, total))) = (swap_util, swap_used, swap_total)
+    {
+        let used_gb = used.current / 1024.0;
+        let total_gb = total.current / 1024.0;
+        let label = format!(
+            "Swap {:.1}/{:.0} GB ({:.0}%)",
+            used_gb, total_gb, util.current
+        );
+        let accent = theme.panel_memory;
+        rows.push(PanelRow::Gauge {
+            label,
+            label_style: theme.label_style(),
+            ratio: util.current / 100.0,
+            filled_style: Style::default().fg(accent),
+            unfilled_style: Style::default().fg(theme.muted),
+        });
+    }
+
+    // Cached + Buffers as text
+    if let Some((_, r)) = snapshot
+        .iter()
+        .find(|(id, _)| id.source == "memory" && id.sensor == "cached")
+    {
+        let cached_gb = r.current / 1024.0;
+        rows.push(PanelRow::Text(Line::from(vec![
+            Span::styled("Cached + Buffers     ", theme.label_style()),
+            Span::styled(format!("{:>7.1} GB", cached_gb), theme.info_style()),
+        ])));
+    }
 
     // HSMP DDR bandwidth and memory clock
     for (_, r) in snapshot.iter().filter(|(id, _)| is_hsmp_memory_sensor(id)) {
         let prec = format_precision(&r.unit);
         let unit_str = r.unit.to_string();
-        lines.push(Line::from(vec![
+        rows.push(PanelRow::Text(Line::from(vec![
             Span::styled(
                 format!("{:<20} ", truncate_label(&r.label, 20)),
                 theme.label_style(),
@@ -641,7 +794,7 @@ fn build_memory_panel<'a>(
                 format!("{:>7.*}{}", prec, r.current, unit_str),
                 theme.info_style(),
             ),
-        ]));
+        ])));
     }
 
     // RAPL sub-domains (core, uncore, dram — package is in the CPU panel)
@@ -649,22 +802,23 @@ fn build_memory_panel<'a>(
         id.source == "cpu" && id.chip == "rapl" && !id.sensor.starts_with("package")
     }) {
         let prec = format_precision(&r.unit);
-        lines.push(Line::from(vec![
+        rows.push(PanelRow::Text(Line::from(vec![
             Span::styled(
                 format!("{:<20} ", truncate_label(&r.label, 20)),
                 theme.label_style(),
             ),
             Span::styled(format!("{:>7.*}W", prec, r.current), theme.power_style()),
-        ]));
+        ])));
     }
 
-    if lines.is_empty() {
+    if rows.is_empty() {
         return None;
     }
 
     Some(Panel {
         title: "Memory".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Mixed(rows),
         column: Column::Left,
         truncated: false,
     })
@@ -705,27 +859,29 @@ fn build_power_panel<'a>(
         .map(|(id, r)| {
             let label = truncate_label(&r.label, 20);
             let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            let spark = history
+            let spark_spans = history
                 .data
                 .get(&key)
-                .map(|buf| sparkline_str(buf, spark_width))
+                .map(|buf| sparkline_spans(buf, spark_width, r.category, theme))
                 .unwrap_or_default();
             let prec = format_precision(&r.unit);
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("{label:<20} "), theme.label_style()),
                 Span::styled(
                     format!("{:>7.*}{}", prec, r.current, r.unit),
                     theme.power_style(),
                 ),
                 Span::raw(" "),
-                Span::styled(spark, theme.muted_style()),
-            ])
+            ];
+            spans.extend(spark_spans);
+            Line::from(spans)
         })
         .collect();
 
     Some(Panel {
         title: "Power".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Lines(lines),
         column: Column::Right,
         truncated: total > max_entries,
     })
@@ -785,7 +941,8 @@ fn build_storage_panel<'a>(
 
     Some(Panel {
         title: "Storage".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Lines(lines),
         column: Column::Left,
         truncated: total_devs > max_entries,
     })
@@ -845,6 +1002,24 @@ fn build_network_panel<'a>(
             let iface = truncate_label(d.name, 10);
             let rx_bar = net_bar(d.rx, d.link_speed_mb, BAR_WIDTH);
             let tx_bar = net_bar(d.tx, d.link_speed_mb, BAR_WIDTH);
+            // link_speed_mb is in MiB/s; convert back to Mbps for display
+            let link = match d.link_speed_mb {
+                Some(mibs) => {
+                    let mbps = mibs * 8.388_608;
+                    if mbps >= 1000.0 {
+                        let gbps = mbps / 1000.0;
+                        // Show decimal for fractional speeds (2.5G, 5G, etc.)
+                        if (gbps - gbps.round()).abs() < 0.1 {
+                            format!(" {:.0}G", gbps.round())
+                        } else {
+                            format!(" {:.1}G", gbps)
+                        }
+                    } else {
+                        format!(" {:.0}M", mbps.round())
+                    }
+                }
+                None => String::new(),
+            };
             Line::from(vec![
                 Span::styled(format!("{iface:<10}"), theme.label_style()),
                 Span::styled(" \u{2193}", theme.good_style()),
@@ -855,13 +1030,15 @@ fn build_network_panel<'a>(
                 Span::styled(format!("{:>7.1}", d.tx), theme.info_style()),
                 Span::raw(" "),
                 Span::styled(tx_bar, theme.info_style()),
+                Span::styled(link, theme.muted_style()),
             ])
         })
         .collect();
 
     Some(Panel {
         title: "Network".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Lines(lines),
         column: Column::Right,
         truncated: total_ifaces > max_entries,
     })
@@ -902,7 +1079,8 @@ fn build_fans_panel<'a>(
 
     Some(Panel {
         title: "Fans".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Lines(lines),
         column: Column::Left,
         truncated: total_fans > max_entries,
     })
@@ -949,67 +1127,10 @@ fn build_platform_panel<'a>(
 
     Some(Panel {
         title: "Platform".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Lines(lines),
         column: Column::Right,
         truncated: total_hsmp > max_entries,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// CPU Cores Panel (3-col only — per-core utilization)
-// ---------------------------------------------------------------------------
-
-fn build_cpu_cores_panel<'a>(
-    snapshot: &'a [(SensorId, SensorReading)],
-    history: &'a SensorHistory,
-    spark_width: usize,
-    max_entries: usize,
-    theme: &TuiTheme,
-) -> Option<Panel<'a>> {
-    let mut cores: Vec<&(SensorId, SensorReading)> = snapshot
-        .iter()
-        .filter(|(id, _)| {
-            id.source == "cpu"
-                && id.chip == "utilization"
-                && id.sensor.starts_with("cpu")
-                && id.sensor != "total"
-        })
-        .collect();
-
-    if cores.is_empty() {
-        return None;
-    }
-
-    cores.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
-    let total = cores.len();
-    cores.truncate(max_entries);
-
-    let lines: Vec<Line<'_>> = cores
-        .iter()
-        .map(|(id, r)| {
-            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            let spark = history
-                .data
-                .get(&key)
-                .map(|buf| sparkline_str(buf, spark_width))
-                .unwrap_or_default();
-            Line::from(vec![
-                Span::styled(
-                    format!("{:<20} ", truncate_label(&r.label, 20)),
-                    theme.label_style(),
-                ),
-                Span::styled(format!("{:>5.1}%", r.current), theme.value_style(r)),
-                Span::raw("  "),
-                Span::styled(spark, theme.muted_style()),
-            ])
-        })
-        .collect();
-
-    Some(Panel {
-        title: "CPU Cores".into(),
-        lines,
-        column: Column::Left,
-        truncated: total > max_entries,
     })
 }
 
@@ -1019,8 +1140,8 @@ fn build_cpu_cores_panel<'a>(
 
 fn build_cpu_freq_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
-    history: &'a SensorHistory,
-    spark_width: usize,
+    _history: &'a SensorHistory,
+    _spark_width: usize,
     max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
@@ -1037,34 +1158,36 @@ fn build_cpu_freq_panel<'a>(
     let total = freqs.len();
     freqs.truncate(max_entries);
 
-    let lines: Vec<Line<'_>> = freqs
+    // Use the global max observed frequency as the gauge ceiling
+    let max_freq = freqs
         .iter()
-        .map(|(id, r)| {
-            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            let spark = history
-                .data
-                .get(&key)
-                .map(|buf| sparkline_str(buf, spark_width))
-                .unwrap_or_default();
-            let prec = format_precision(&r.unit);
-            Line::from(vec![
-                Span::styled(
-                    format!("{:<20} ", truncate_label(&r.label, 20)),
-                    theme.label_style(),
-                ),
-                Span::styled(
-                    format!("{:>7.*}{}", prec, r.current, r.unit),
-                    theme.value_style(r),
-                ),
-                Span::raw(" "),
-                Span::styled(spark, theme.muted_style()),
-            ])
+        .map(|(_, r)| r.max)
+        .fold(0.0f64, f64::max)
+        .max(1.0);
+
+    let rows: Vec<PanelRow<'_>> = freqs
+        .iter()
+        .map(|(_, r)| {
+            let ratio = if max_freq > 0.0 {
+                r.current / max_freq
+            } else {
+                0.0
+            };
+            let label = truncate_label(&r.label, 14);
+            PanelRow::Gauge {
+                label: format!("{label:<14} {:>5.0}{}", r.current, r.unit),
+                label_style: theme.label_style(),
+                ratio,
+                filled_style: Style::default().fg(theme.panel_frequency),
+                unfilled_style: Style::default().fg(theme.muted),
+            }
         })
         .collect();
 
     Some(Panel {
         title: "CPU Freq".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Mixed(rows),
         column: Column::Center,
         truncated: total > max_entries,
     })
@@ -1099,27 +1222,29 @@ fn build_voltage_panel<'a>(
         .map(|(id, r)| {
             let label = truncate_label(&r.label, 20);
             let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            let spark = history
+            let spark_spans = history
                 .data
                 .get(&key)
-                .map(|buf| sparkline_str(buf, spark_width))
+                .map(|buf| sparkline_spans(buf, spark_width, r.category, theme))
                 .unwrap_or_default();
             let prec = format_precision(&r.unit);
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("{label:<20} "), theme.label_style()),
                 Span::styled(
                     format!("{:>7.*}{}", prec, r.current, r.unit),
                     theme.voltage_style(),
                 ),
                 Span::raw(" "),
-                Span::styled(spark, theme.muted_style()),
-            ])
+            ];
+            spans.extend(spark_spans);
+            Line::from(spans)
         })
         .collect();
 
     Some(Panel {
         title: "Voltage".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Lines(lines),
         column: Column::Right, // 2-col: right; 3-col: remapped to center
         truncated: total > max_entries,
     })
@@ -1165,10 +1290,11 @@ fn build_gpu_panel<'a>(
             };
             let label = format!("GPU{gpu_idx} {sensor_name}");
             let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            let spark = history
+            // Use uniform color for all GPU sparklines to avoid rainbow effect
+            let spark_spans = history
                 .data
                 .get(&key)
-                .map(|buf| sparkline_str(buf, spark_width))
+                .map(|buf| sparkline_spans(buf, spark_width, SensorCategory::Other, theme))
                 .unwrap_or_default();
             let prec = format_precision(&r.unit);
             let unit_str = r.unit.to_string();
@@ -1178,19 +1304,21 @@ fn build_gpu_panel<'a>(
                 "{unit_str}{}",
                 " ".repeat(3usize.saturating_sub(unit_display_width))
             );
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("{label:<20} "), theme.label_style()),
                 Span::styled(format!("{:>7.*}", prec, r.current), theme.value_style(r)),
                 Span::styled(unit_padded, theme.muted_style()),
                 Span::raw(" "),
-                Span::styled(spark, theme.muted_style()),
-            ])
+            ];
+            spans.extend(spark_spans);
+            Line::from(spans)
         })
         .collect();
 
     Some(Panel {
         title: "GPU".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Lines(lines),
         column: Column::Left, // 2-col: left; 3-col: remapped to center
         truncated: total > max_entries,
     })
@@ -1236,7 +1364,8 @@ fn build_errors_panel<'a>(
 
     Some(Panel {
         title: "Errors".into(),
-        lines,
+        headline: None,
+        content: PanelContent::Lines(lines),
         column: Column::Left, // doesn't matter, errors span full width
         truncated: false,
     })
@@ -1360,13 +1489,13 @@ fn build_custom_panel<'a>(
             ];
             if spark_width > 0 {
                 let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-                let spark = history
+                let spark_spans = history
                     .data
                     .get(&key)
-                    .map(|buf| sparkline_str(buf, spark_width))
+                    .map(|buf| sparkline_spans(buf, spark_width, r.category, theme))
                     .unwrap_or_default();
                 spans.push(Span::raw(" "));
-                spans.push(Span::styled(spark, theme.muted_style()));
+                spans.extend(spark_spans);
             }
             Line::from(spans)
         })
@@ -1374,7 +1503,8 @@ fn build_custom_panel<'a>(
 
     Some(Panel {
         title: config.title.clone(),
-        lines,
+        headline: None,
+        content: PanelContent::Lines(lines),
         column: Column::Left, // caller will reassign
         truncated: total_matched > max,
     })
@@ -1577,7 +1707,7 @@ mod tests {
         };
         let panel = build_custom_panel(&snapshot, &history, &config, &layout, &theme);
         assert!(panel.is_some());
-        assert_eq!(panel.unwrap().lines.len(), 2); // matches hwmon sensors only
+        assert_eq!(panel.unwrap().content.lines().len(), 2); // matches hwmon sensors only
     }
 
     #[test]
@@ -1615,7 +1745,7 @@ mod tests {
             sort: None,
         };
         let panel = build_custom_panel(&snapshot, &history, &config, &layout, &theme).unwrap();
-        assert_eq!(panel.lines.len(), 1); // only the temp sensor
+        assert_eq!(panel.content.lines().len(), 1); // only the temp sensor
     }
 
     #[test]
@@ -1688,9 +1818,9 @@ mod tests {
             sort: Some("desc".into()),
         };
         let panel = build_custom_panel(&snapshot, &history, &config, &layout, &theme).unwrap();
-        assert_eq!(panel.lines.len(), 3);
+        assert_eq!(panel.content.lines().len(), 3);
         // First line should contain "High" (80°C), not "Low" (30°C)
-        let first_line = format!("{}", panel.lines[0]);
+        let first_line = format!("{}", panel.content.lines()[0]);
         assert!(
             first_line.contains("High"),
             "Expected 'High' first, got: {first_line}"
@@ -1750,6 +1880,6 @@ mod tests {
             sort: None,
         };
         let panel = build_custom_panel(&snapshot, &history, &config, &layout, &theme).unwrap();
-        assert_eq!(panel.lines.len(), 1); // clamped to 1
+        assert_eq!(panel.content.lines().len(), 1); // clamped to 1
     }
 }

@@ -10,6 +10,7 @@ pub mod hwmon;
 pub mod i2c;
 pub mod ipmi;
 pub mod mce;
+pub mod memory_util;
 pub mod network_stats;
 pub mod poller;
 pub mod rapl;
