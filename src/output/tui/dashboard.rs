@@ -199,6 +199,11 @@ enum PanelContent<'a> {
     Lines(Vec<Line<'a>>),
     /// Mixed content: text lines interleaved with gauge widgets.
     Mixed(Vec<PanelRow<'a>>),
+    /// Multi-column layout: rows distributed across N columns.
+    MultiCol {
+        rows: Vec<PanelRow<'a>>,
+        columns: u8,
+    },
 }
 
 enum PanelRow<'a> {
@@ -217,6 +222,10 @@ impl<'a> PanelContent<'a> {
         match self {
             PanelContent::Lines(lines) => lines.len() as u16,
             PanelContent::Mixed(rows) => rows.len() as u16,
+            PanelContent::MultiCol { rows, columns } => {
+                let cols = (*columns).max(1) as usize;
+                rows.len().div_ceil(cols) as u16
+            }
         }
     }
 
@@ -224,7 +233,7 @@ impl<'a> PanelContent<'a> {
     fn lines(&self) -> &[Line<'a>] {
         match self {
             PanelContent::Lines(lines) => lines,
-            PanelContent::Mixed(_) => &[],
+            PanelContent::Mixed(_) | PanelContent::MultiCol { .. } => &[],
         }
     }
 }
@@ -400,46 +409,68 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
                 frame.render_widget(paragraph, chunks[i]);
             }
             PanelContent::Mixed(rows) => {
-                // Render the block border first, then render each row inside it.
                 let inner = block.inner(chunks[i]);
                 frame.render_widget(block, chunks[i]);
-                let row_constraints: Vec<Constraint> =
-                    rows.iter().map(|_| Constraint::Length(1)).collect();
-                let row_areas = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints(row_constraints)
+                render_rows(frame, inner, rows);
+            }
+            PanelContent::MultiCol { rows, columns } => {
+                let inner = block.inner(chunks[i]);
+                frame.render_widget(block, chunks[i]);
+                let ncols = (*columns).max(1) as usize;
+                let rows_per_col = rows.len().div_ceil(ncols);
+                let col_constraints: Vec<Constraint> = (0..ncols)
+                    .map(|_| Constraint::Ratio(1, ncols as u32))
+                    .collect();
+                let col_areas = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(col_constraints)
                     .split(inner);
-                for (j, row) in rows.iter().enumerate() {
-                    if j >= row_areas.len() {
-                        break;
-                    }
-                    match row {
-                        PanelRow::Text(line) => {
-                            let p = Paragraph::new(line.clone());
-                            frame.render_widget(p, row_areas[j]);
-                        }
-                        PanelRow::Gauge {
-                            label,
-                            label_style,
-                            ratio,
-                            filled_style,
-                            unfilled_style,
-                        } => {
-                            let safe_ratio = if ratio.is_finite() {
-                                ratio.clamp(0.0, 1.0)
-                            } else {
-                                0.0
-                            };
-                            let gauge = LineGauge::default()
-                                .ratio(safe_ratio)
-                                .label(label.as_str())
-                                .style(*label_style)
-                                .filled_style(*filled_style)
-                                .unfilled_style(*unfilled_style);
-                            frame.render_widget(gauge, row_areas[j]);
-                        }
+                for (c, col_area) in col_areas.iter().enumerate() {
+                    let start = c * rows_per_col;
+                    let end = rows.len().min(start + rows_per_col);
+                    if start < end {
+                        render_rows(frame, *col_area, &rows[start..end]);
                     }
                 }
+            }
+        }
+    }
+}
+
+fn render_rows(frame: &mut ratatui::Frame, area: Rect, rows: &[PanelRow<'_>]) {
+    let row_constraints: Vec<Constraint> = rows.iter().map(|_| Constraint::Length(1)).collect();
+    let row_areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(row_constraints)
+        .split(area);
+    for (j, row) in rows.iter().enumerate() {
+        if j >= row_areas.len() {
+            break;
+        }
+        match row {
+            PanelRow::Text(line) => {
+                let p = Paragraph::new(line.clone());
+                frame.render_widget(p, row_areas[j]);
+            }
+            PanelRow::Gauge {
+                label,
+                label_style,
+                ratio,
+                filled_style,
+                unfilled_style,
+            } => {
+                let safe_ratio = if ratio.is_finite() {
+                    ratio.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let gauge = LineGauge::default()
+                    .ratio(safe_ratio)
+                    .label(label.as_str())
+                    .style(*label_style)
+                    .filled_style(*filled_style)
+                    .unfilled_style(*unfilled_style);
+                frame.render_widget(gauge, row_areas[j]);
             }
         }
     }
@@ -555,7 +586,7 @@ fn build_cpu_panel<'a>(
         };
         rows.push(PanelRow::Gauge {
             label_style: theme.label_style(),
-            label: format!("CPU {:.1}%", reading.current),
+            label: String::new(),
             ratio: reading.current / 100.0,
             filled_style,
             unfilled_style: Style::default().fg(theme.muted),
@@ -1064,25 +1095,25 @@ fn build_fans_panel<'a>(
 
     fans.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
     let total_fans = fans.len();
-    fans.truncate(max_entries);
+    fans.truncate(max_entries * 2);
 
-    let lines: Vec<Line<'_>> = fans
+    let rows: Vec<PanelRow<'_>> = fans
         .iter()
         .map(|(_, r)| {
-            let label = truncate_label(&r.label, 20);
-            Line::from(vec![
-                Span::styled(format!("{label:<20} "), theme.label_style()),
+            let label = truncate_label(&r.label, 16);
+            PanelRow::Text(Line::from(vec![
+                Span::styled(format!("{label:<16} "), theme.label_style()),
                 Span::styled(format!("{:>5.0} RPM", r.current), theme.value_style(r)),
-            ])
+            ]))
         })
         .collect();
 
     Some(Panel {
         title: "Fans".into(),
         headline: None,
-        content: PanelContent::Lines(lines),
+        content: PanelContent::MultiCol { rows, columns: 2 },
         column: Column::Left,
-        truncated: total_fans > max_entries,
+        truncated: total_fans > max_entries * 2,
     })
 }
 
@@ -1156,7 +1187,8 @@ fn build_cpu_freq_panel<'a>(
 
     freqs.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
     let total = freqs.len();
-    freqs.truncate(max_entries);
+    // 2-column layout: allow twice as many entries since each column holds half
+    freqs.truncate(max_entries * 2);
 
     // Use the global max observed frequency as the gauge ceiling
     let max_freq = freqs
@@ -1187,9 +1219,9 @@ fn build_cpu_freq_panel<'a>(
     Some(Panel {
         title: "CPU Freq".into(),
         headline: None,
-        content: PanelContent::Mixed(rows),
+        content: PanelContent::MultiCol { rows, columns: 2 },
         column: Column::Center,
-        truncated: total > max_entries,
+        truncated: total > max_entries * 2,
     })
 }
 
