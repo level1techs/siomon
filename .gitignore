@@ -2,6 +2,11 @@
 progress.md
 re_data/
 
+# Credential files
+*.pass
+*.kdbx*
+*-ssh+gpg-keys*
+
 # Kernel module build artifacts
 kmod/*/*.o
 kmod/*/*.ko
