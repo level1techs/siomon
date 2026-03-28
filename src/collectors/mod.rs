@@ -1,3 +1,9 @@
+//! One-shot hardware information collectors.
+//!
+//! Each submodule queries a specific hardware subsystem (CPU, GPU, memory, etc.)
+//! and populates [`SystemInfo`] fields. All collectors run in parallel during a
+//! full system scan.
+
 pub mod audio;
 pub mod battery;
 pub mod cpu;

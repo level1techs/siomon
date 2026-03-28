@@ -1,3 +1,5 @@
+//! Error types (`SiomonError`, `NvmlError`) and the crate-level `Result` alias.
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

@@ -1,3 +1,5 @@
+//! Configuration file loading and management (`~/.config/siomon/config.toml`).
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;

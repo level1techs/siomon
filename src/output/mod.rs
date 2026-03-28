@@ -1,3 +1,8 @@
+//! Output formatters and the TUI dashboard.
+//!
+//! Each submodule renders [`SystemInfo`](crate::model::system::SystemInfo) in a
+//! different format. Most are feature-gated; `text` is always available.
+
 #[cfg(feature = "csv")]
 pub mod csv;
 #[cfg(feature = "html")]

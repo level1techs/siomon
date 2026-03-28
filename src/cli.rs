@@ -1,3 +1,5 @@
+//! Command-line argument parsing and config-file application.
+
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::SiomonConfig;

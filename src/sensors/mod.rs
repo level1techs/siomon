@@ -1,3 +1,9 @@
+//! Real-time sensor polling sources.
+//!
+//! Most submodules implement [`SensorSource`] for a specific data source
+//! (hwmon, IPMI, RAPL, Super I/O, I2C/PMBus, etc.). The [`poller`] module
+//! orchestrates all discovered sources in a background thread.
+
 pub mod aer;
 pub mod alerts;
 pub mod cpu_freq;
