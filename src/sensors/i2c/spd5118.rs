@@ -30,8 +30,7 @@ pub struct Spd5118Source {
 }
 
 struct DimmSensor {
-    bus: u32,
-    addr: u16,
+    dev: SmbusDevice,
     label: String,
     id: SensorId,
 }
@@ -52,7 +51,7 @@ impl Spd5118Source {
 
             for addr in SPD_ADDR_FIRST..=SPD_ADDR_LAST {
                 if let Some(dimm) = probe_spd5118(bus.bus_num, addr, dimm_index) {
-                    log::info!(
+                    log::debug!(
                         "SPD5118 DIMM found: bus {} addr {:#04x} -> {}",
                         bus.bus_num,
                         addr,
@@ -81,7 +80,7 @@ impl Spd5118Source {
         let mut readings = Vec::new();
 
         for dimm in &self.dimms {
-            match read_temperature(dimm.bus, dimm.addr) {
+            match read_temperature_cached(&dimm.dev) {
                 Ok(temp_c) => {
                     let reading = SensorReading::new(
                         dimm.label.clone(),
@@ -92,13 +91,7 @@ impl Spd5118Source {
                     readings.push((dimm.id.clone(), reading));
                 }
                 Err(e) => {
-                    log::warn!(
-                        "Failed to read temperature from {} (bus {} addr {:#04x}): {}",
-                        dimm.label,
-                        dimm.bus,
-                        dimm.addr,
-                        e
-                    );
+                    log::warn!("SPD5118: read failed {}: {}", dimm.label, e);
                 }
             }
         }
@@ -158,12 +151,7 @@ fn probe_spd5118(bus: u32, addr: u16, dimm_index: u32) -> Option<DimmSensor> {
         sensor: format!("dimm{dimm_index}_temp"),
     };
 
-    Some(DimmSensor {
-        bus,
-        addr,
-        label,
-        id,
-    })
+    Some(DimmSensor { dev, label, id })
 }
 
 /// Read the SPD5118 temperature register and convert to degrees Celsius.
@@ -180,8 +168,7 @@ fn probe_spd5118(bus: u32, addr: u16, dimm_index: u32) -> Option<DimmSensor> {
 /// For positive values: temperature = bits[11:4] + bits[3:0] * 0.0625
 /// For negative values: the 13-bit field [12:0] is a signed 2's complement
 /// value scaled by 16 (i.e., divide by 16.0 to get degrees).
-fn read_temperature(bus: u32, addr: u16) -> std::io::Result<f64> {
-    let dev = SmbusDevice::open(bus, addr)?;
+fn read_temperature_cached(dev: &SmbusDevice) -> std::io::Result<f64> {
     let raw = dev.read_word_data(SPD5118_MR_TEMPERATURE)?;
 
     // Mask to 13 significant bits [12:0]

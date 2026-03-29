@@ -31,6 +31,27 @@ pub enum Platform {
     Tegra,
 }
 
+pub mod diagnostics;
+
+/// A prerequisite for a board feature to work correctly.
+#[derive(Debug)]
+pub enum Requirement {
+    /// BIOS version from `/sys/class/dmi/id/bios_version` must parse as
+    /// integer >= this value. If parsing fails, treated as unverifiable.
+    MinBiosVersion { version: u32, hint: &'static str },
+    /// Manual BIOS setting that can't be verified programmatically.
+    /// Always advisory — surfaced when probing returns zero results.
+    BiosSetting { description: &'static str },
+}
+
+/// Per-feature requirements declared by a board template.
+/// Each slice is empty when no requirements are known.
+#[derive(Debug)]
+pub struct FeatureRequirements {
+    /// Prerequisites for DDR5 I2C probing (SPD EEPROM + temperature sensors).
+    pub ddr5: &'static [Requirement],
+}
+
 /// DDR5 I2C bus topology for direct SPD/temperature probing.
 ///
 /// Boards opt in to DDR5 probing by setting `ddr5_bus_config: Some(...)` in
@@ -74,6 +95,8 @@ pub struct BoardTemplate {
     /// temperature sensors. Only set on boards where raw I2C probing has
     /// been validated — see `Ddr5BusConfig` for the data flow.
     pub ddr5_bus_config: Option<&'static Ddr5BusConfig>,
+    /// Per-feature prerequisites (BIOS version, settings, etc.).
+    pub requirements: FeatureRequirements,
 }
 
 /// Maps an EDAC rank to a physical DIMM slot.
@@ -322,6 +345,7 @@ mod tests {
             nct_voltage_scaling: None,
             dimm_labels: &[],
             ddr5_bus_config: None,
+            requirements: FeatureRequirements { ddr5: &[] },
         };
         let labels = resolve_labels(&board);
         // Board override wins
@@ -343,6 +367,7 @@ mod tests {
             nct_voltage_scaling: None,
             dimm_labels: &[],
             ddr5_bus_config: None,
+            requirements: FeatureRequirements { ddr5: &[] },
         };
         let labels = resolve_labels(&board);
         assert_eq!(labels.len(), 1);

@@ -1,4 +1,4 @@
-use crate::db::boards::{BoardTemplate, Ddr5BusConfig, Platform};
+use crate::db::boards::{BoardTemplate, Ddr5BusConfig, FeatureRequirements, Platform};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["pro ws", "trx50", "sage"],
@@ -19,4 +19,5 @@ pub static BOARD: BoardTemplate = BoardTemplate {
         i2c_buses: &[0, 1],
         slots_per_bus: 4,
     }),
+    requirements: FeatureRequirements { ddr5: &[] },
 };

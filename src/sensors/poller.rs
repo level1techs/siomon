@@ -267,8 +267,12 @@ fn discover_all_sources(
                     &buses,
                 )));
                 let ddr5_config = board.and_then(|b| b.ddr5_bus_config);
+                let ddr5_reqs = board.map(|b| b.requirements.ddr5).unwrap_or(&[]);
                 dio_sources.push(Box::new(
-                    crate::sensors::i2c::ddr5_temp::Ddr5TempSource::discover(ddr5_config),
+                    crate::sensors::i2c::ddr5_temp::Ddr5TempSource::discover(
+                        ddr5_config,
+                        ddr5_reqs,
+                    ),
                 ));
                 log::info!("I2C: enabled ({} buses)", buses.len());
 

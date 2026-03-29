@@ -10,7 +10,7 @@
 //! Boards opt in by setting `ddr5_bus_config` in their `BoardTemplate`
 //! (see `db/boards/mod.rs`). Requires `--direct-io`.
 
-use crate::db::boards::Ddr5BusConfig;
+use crate::db::boards::{Ddr5BusConfig, Requirement};
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::sensors::i2c::bus_scan;
 use crate::sensors::i2c::ddr5;
@@ -75,8 +75,7 @@ impl SensorType {
 }
 
 struct TempSensor {
-    bus: u32,
-    addr: u16,
+    dev: SmbusDevice,
     label: String,
     id: SensorId,
 }
@@ -89,7 +88,10 @@ impl Ddr5TempSource {
     /// Discover DDR5 temperature sensors on whitelisted I2C buses.
     ///
     /// Returns an empty source if no DDR5 bus config or no devices are found.
-    pub fn discover(ddr5_bus_config: Option<&Ddr5BusConfig>) -> Self {
+    pub fn discover(
+        ddr5_bus_config: Option<&Ddr5BusConfig>,
+        ddr5_requirements: &[Requirement],
+    ) -> Self {
         let Some(config) = ddr5_bus_config else {
             return Self {
                 sensors: Vec::new(),
@@ -127,6 +129,11 @@ impl Ddr5TempSource {
                 for sensor_type in [SensorType::Hub, SensorType::Ts0, SensorType::Ts1] {
                     let addr = sensor_type.base_addr() + slot;
                     if probe_ddr5_sensor(bus_num, addr) {
+                        // Open a persistent handle for polling.
+                        let dev = match SmbusDevice::open(bus_num, addr) {
+                            Ok(dev) => dev,
+                            Err(_) => continue,
+                        };
                         let label = format!(
                             "DIMM {} {} (bus {} slot {})",
                             dimm_index,
@@ -143,19 +150,14 @@ impl Ddr5TempSource {
                                 sensor_type.sensor_suffix()
                             ),
                         };
-                        log::info!(
+                        log::debug!(
                             "DDR5 temp: found {} at bus {} addr {:#04x} -> {}",
                             sensor_type.label_prefix(),
                             bus_num,
                             addr,
                             id
                         );
-                        sensors.push(TempSensor {
-                            bus: bus_num,
-                            addr,
-                            label,
-                            id,
-                        });
+                        sensors.push(TempSensor { dev, label, id });
                     }
                 }
 
@@ -164,7 +166,15 @@ impl Ddr5TempSource {
         }
 
         if sensors.is_empty() {
-            log::debug!("DDR5 temp: no sensors discovered");
+            let bios = crate::db::boards::diagnostics::read_bios_version();
+            let hints = crate::db::boards::diagnostics::probe_failure_hints(
+                "DDR5 temp",
+                ddr5_requirements,
+                bios.as_deref(),
+            );
+            for hint in &hints {
+                log::warn!("DDR5 temp: {}", hint);
+            }
         } else {
             log::info!("DDR5 temp: discovered {} sensor(s)", sensors.len());
         }
@@ -176,7 +186,7 @@ impl Ddr5TempSource {
         let mut readings = Vec::new();
 
         for s in &self.sensors {
-            match read_temperature(s.bus, s.addr) {
+            match read_temperature_cached(&s.dev) {
                 Ok(temp_c) => {
                     readings.push((
                         s.id.clone(),
@@ -189,13 +199,7 @@ impl Ddr5TempSource {
                     ));
                 }
                 Err(e) => {
-                    log::warn!(
-                        "DDR5 temp: read failed {} (bus {} addr {:#04x}): {}",
-                        s.label,
-                        s.bus,
-                        s.addr,
-                        e
-                    );
+                    log::warn!("DDR5 temp: read failed {}: {}", s.label, e);
                 }
             }
         }
@@ -237,11 +241,8 @@ fn probe_ddr5_sensor(bus: u32, addr: u16) -> bool {
         }
     };
 
-    // Ensure page 0 is active so volatile registers are accessible.
-    if (HUB_ADDR_BASE..HUB_ADDR_BASE + HUB_ADDR_COUNT).contains(&addr) {
-        let _ = dev.write_byte_data(0x0B, 0x00);
-    }
-
+    // Verify device type BEFORE any writes — writing to register 0x0B
+    // on a non-SPD5118/TS5111 device could corrupt EEPROM data.
     let mr0 = match dev.read_byte_data(MR0_DEVICE_TYPE) {
         Ok(mr0) => mr0,
         Err(e) => {
@@ -262,6 +263,12 @@ fn probe_ddr5_sensor(bus: u32, addr: u16) -> bool {
             mr0
         );
         return false;
+    }
+
+    // Confirmed SPD5118/TS5111 — reset page 0 on hub addresses so
+    // volatile registers (including temperature) are accessible.
+    if (HUB_ADDR_BASE..HUB_ADDR_BASE + HUB_ADDR_COUNT).contains(&addr) {
+        let _ = dev.write_byte_data(0x0B, 0x00);
     }
 
     // Verify plausible temperature.
@@ -294,11 +301,10 @@ fn probe_ddr5_sensor(bus: u32, addr: u16) -> bool {
     true
 }
 
-/// Read temperature from MR31 and convert to degrees Celsius.
+/// Read temperature from MR31 using a cached device handle.
 ///
 /// Encoding: 13-bit signed value in bits [12:0], 0.0625°C per LSB.
-fn read_temperature(bus: u32, addr: u16) -> std::io::Result<f64> {
-    let dev = SmbusDevice::open(bus, addr)?;
+fn read_temperature_cached(dev: &SmbusDevice) -> std::io::Result<f64> {
     let raw = dev.read_word_data(MR_TEMPERATURE)?;
 
     let masked = raw & 0x1FFF;
@@ -318,7 +324,7 @@ mod tests {
 
     #[test]
     fn discover_none_returns_empty() {
-        let source = Ddr5TempSource::discover(None);
+        let source = Ddr5TempSource::discover(None, &[]);
         assert_eq!(source.sensor_count(), 0);
         assert!(source.poll().is_empty());
     }

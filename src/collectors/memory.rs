@@ -19,12 +19,10 @@ pub fn collect(direct_io: bool, board: Option<&'static BoardTemplate>) -> Memory
     };
 
     // Enrich DIMMs with SPD EEPROM data on supported boards (requires --direct-io).
-    if let Some(ddr5_config) = direct_io
-        .then_some(board)
-        .flatten()
-        .and_then(|b| b.ddr5_bus_config)
-    {
-        enrich_dimms_with_spd(&mut dimms, ddr5_config);
+    if let Some(b) = direct_io.then_some(board).flatten() {
+        if let Some(ddr5_config) = b.ddr5_bus_config {
+            enrich_dimms_with_spd(&mut dimms, ddr5_config, b.requirements.ddr5);
+        }
     }
 
     MemoryInfo {
@@ -40,8 +38,12 @@ pub fn collect(direct_io: bool, board: Option<&'static BoardTemplate>) -> Memory
 }
 
 /// Read SPD EEPROMs and match them to SMBIOS DIMM entries by serial number.
-fn enrich_dimms_with_spd(dimms: &mut [DimmInfo], ddr5_config: &crate::db::boards::Ddr5BusConfig) {
-    let spd_results = super::spd::read_ddr5_spd(ddr5_config);
+fn enrich_dimms_with_spd(
+    dimms: &mut [DimmInfo],
+    ddr5_config: &crate::db::boards::Ddr5BusConfig,
+    ddr5_requirements: &[crate::db::boards::Requirement],
+) {
+    let spd_results = super::spd::read_ddr5_spd(ddr5_config, ddr5_requirements);
     if spd_results.is_empty() {
         return;
     }
@@ -59,7 +61,7 @@ fn enrich_dimms_with_spd(dimms: &mut [DimmInfo], ddr5_config: &crate::db::boards
                 .as_ref()
                 .is_some_and(|sn| sn.eq_ignore_ascii_case(&spd_serial))
         }) {
-            log::info!(
+            log::debug!(
                 "SPD: matched serial {} -> {} ({})",
                 spd_serial,
                 dimm.locator,
@@ -273,7 +275,10 @@ fn parse_memory_type(s: &str) -> MemoryType {
     }
 }
 
-pub struct MemoryCollector;
+pub struct MemoryCollector {
+    pub direct_io: bool,
+    pub board: Option<&'static crate::db::boards::BoardTemplate>,
+}
 
 impl crate::collectors::Collector for MemoryCollector {
     fn name(&self) -> &str {
@@ -281,7 +286,7 @@ impl crate::collectors::Collector for MemoryCollector {
     }
 
     fn collect_into(&self, info: &mut crate::model::system::SystemInfo) {
-        info.memory = collect(false, None);
+        info.memory = collect(self.direct_io, self.board);
     }
 }
 

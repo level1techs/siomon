@@ -1,4 +1,4 @@
-use crate::db::boards::{BoardTemplate, Platform};
+use crate::db::boards::{BoardTemplate, FeatureRequirements, Platform};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["p4242"], // DMI board_name for NVIDIA DGX Spark
@@ -15,4 +15,5 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     nct_voltage_scaling: None,
     dimm_labels: &[],
     ddr5_bus_config: None,
+    requirements: FeatureRequirements { ddr5: &[] },
 };

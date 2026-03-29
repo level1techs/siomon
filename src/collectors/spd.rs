@@ -8,7 +8,7 @@
 //! Boards opt in by setting `ddr5_bus_config` in their `BoardTemplate`
 //! (see `db/boards/mod.rs`). Requires `--direct-io`.
 
-use crate::db::boards::Ddr5BusConfig;
+use crate::db::boards::{Ddr5BusConfig, Requirement};
 use crate::model::memory::SpdData;
 use crate::sensors::i2c::bus_scan;
 use crate::sensors::i2c::ddr5;
@@ -32,7 +32,6 @@ const EEPROM_SIZE: usize = 1024;
 
 /// SPD address range for DDR5 DIMMs.
 const SPD_ADDR_FIRST: u16 = 0x50;
-const SPD_ADDR_LAST: u16 = 0x57;
 
 /// Result of reading one DIMM's SPD EEPROM.
 pub struct SpdDump {
@@ -45,7 +44,10 @@ pub struct SpdDump {
 ///
 /// Returns parsed `SpdData` paired with the serial number read from SPD
 /// bytes 517–520 for matching against SMBIOS DIMM entries.
-pub fn read_ddr5_spd(config: &Ddr5BusConfig) -> Vec<(String, SpdData)> {
+pub fn read_ddr5_spd(
+    config: &Ddr5BusConfig,
+    ddr5_requirements: &[Requirement],
+) -> Vec<(String, SpdData)> {
     let buses = bus_scan::enumerate_buses();
     let dw_buses = ddr5::filter_buses(config, &buses);
 
@@ -57,12 +59,12 @@ pub fn read_ddr5_spd(config: &Ddr5BusConfig) -> Vec<(String, SpdData)> {
     let mut results = Vec::new();
 
     for &bus in &dw_buses {
-        log::debug!("SPD: scanning bus {}", bus);
-        for addr in SPD_ADDR_FIRST..=SPD_ADDR_LAST {
+        log::debug!("SPD: scanning bus {} (slots {})", bus, config.slots_per_bus);
+        for addr in SPD_ADDR_FIRST..(SPD_ADDR_FIRST + config.slots_per_bus) {
             match read_spd_eeprom(bus, addr) {
                 Some(dump) => {
                     let serial = parse_spd_serial(&dump.data);
-                    log::info!(
+                    log::debug!(
                         "SPD: read EEPROM from bus {} addr {:#04x} serial={}",
                         bus,
                         addr,
@@ -76,6 +78,18 @@ pub fn read_ddr5_spd(config: &Ddr5BusConfig) -> Vec<(String, SpdData)> {
                     log::debug!("SPD: no readable SPD5118 at bus {} addr {:#04x}", bus, addr);
                 }
             }
+        }
+    }
+
+    if results.is_empty() {
+        let bios = crate::db::boards::diagnostics::read_bios_version();
+        let hints = crate::db::boards::diagnostics::probe_failure_hints(
+            "SPD",
+            ddr5_requirements,
+            bios.as_deref(),
+        );
+        for hint in &hints {
+            log::warn!("SPD: {}", hint);
         }
     }
 
@@ -96,12 +110,8 @@ fn read_spd_eeprom(bus: u32, addr: u16) -> Option<SpdDump> {
         }
     };
 
-    // Ensure page 0 is selected before probing — a prior aborted read may
-    // have left MR11 at a non-zero page, which disables volatile register
-    // access on some SPD5118 implementations.
-    let _ = dev.write_byte_data(MR11_PAGE_SELECT, 0x00);
-
-    // Verify SPD5118 device type.
+    // Verify SPD5118 device type BEFORE any writes — writing to register 0x0B
+    // on a non-SPD5118 device could corrupt EEPROM data.
     let mr0 = match dev.read_byte_data(MR0_DEVICE_TYPE) {
         Ok(mr0) => mr0,
         Err(e) => {
@@ -123,6 +133,10 @@ fn read_spd_eeprom(bus: u32, addr: u16) -> Option<SpdDump> {
         );
         return None;
     }
+
+    // Now that we've confirmed this is an SPD5118, reset to page 0.
+    // A prior aborted read may have left MR11 on a non-zero page.
+    let _ = dev.write_byte_data(MR11_PAGE_SELECT, 0x00);
 
     let mut eeprom = [0u8; EEPROM_SIZE];
     let mut ok = true;
@@ -178,7 +192,14 @@ fn read_spd_eeprom(bus: u32, addr: u16) -> Option<SpdDump> {
     // Retry once if the first attempt fails (I2C contention under load).
     if dev.write_byte_data(MR11_PAGE_SELECT, 0x00).is_err() {
         std::thread::sleep(std::time::Duration::from_millis(1));
-        let _ = dev.write_byte_data(MR11_PAGE_SELECT, 0x00);
+        if dev.write_byte_data(MR11_PAGE_SELECT, 0x00).is_err() {
+            log::error!(
+                "SPD: failed to restore page 0 on bus {} addr {:#04x} — \
+                 temperature reads may return garbage until next reboot",
+                bus,
+                addr
+            );
+        }
     }
 
     if !ok {
@@ -289,14 +310,6 @@ fn parse_ddr5_spd(data: &[u8; EEPROM_SIZE]) -> Option<SpdData> {
     let spd_manufacturer = parse_jedec_manufacturer(data);
     let spd_part_number = parse_part_number(data);
 
-    let raw_hex = data
-        .iter()
-        .fold(String::with_capacity(EEPROM_SIZE * 2), |mut s, b| {
-            use std::fmt::Write;
-            let _ = write!(s, "{b:02x}");
-            s
-        });
-
     Some(SpdData {
         spd_revision,
         die_density_gb,
@@ -315,7 +328,6 @@ fn parse_ddr5_spd(data: &[u8; EEPROM_SIZE]) -> Option<SpdData> {
         cas_latencies,
         spd_manufacturer,
         spd_part_number,
-        raw_hex: Some(raw_hex),
     })
 }
 

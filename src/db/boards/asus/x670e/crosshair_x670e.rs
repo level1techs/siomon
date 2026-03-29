@@ -1,4 +1,4 @@
-use crate::db::boards::{ASUS_AM5_NCT6798_LABELS, BoardTemplate, Platform};
+use crate::db::boards::{ASUS_AM5_NCT6798_LABELS, BoardTemplate, FeatureRequirements, Platform};
 use crate::db::voltage_scaling;
 
 pub static BOARD: BoardTemplate = BoardTemplate {
@@ -14,4 +14,5 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     nct_voltage_scaling: Some(&voltage_scaling::ASUS_AM5_NCT6798),
     dimm_labels: &[],
     ddr5_bus_config: None,
+    requirements: FeatureRequirements { ddr5: &[] },
 };

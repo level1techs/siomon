@@ -72,9 +72,6 @@ pub struct SpdData {
     pub spd_manufacturer: Option<String>,
     /// SPD part number (from EEPROM bytes 521–550).
     pub spd_part_number: Option<String>,
-    /// Raw 1024-byte EEPROM dump, hex-encoded.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
