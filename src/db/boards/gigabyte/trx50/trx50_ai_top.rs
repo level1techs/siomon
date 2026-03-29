@@ -16,5 +16,5 @@ pub static BOARD: BoardTemplate = BoardTemplate {
         i2c_buses: &[1, 2],
         slots_per_bus: 4,
     }),
-    requirements: FeatureRequirements { ddr5: &[] },
+    requirements: FeatureRequirements::NONE,
 };

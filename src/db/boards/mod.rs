@@ -45,12 +45,33 @@ pub enum Requirement {
 }
 
 /// Per-feature requirements declared by a board template.
-/// Each slice is empty when no requirements are known.
+///
+/// A map of feature name → requirement slice. Boards only declare entries
+/// for features they have. Adding a new feature (e.g., DDR6) requires only
+/// a new `FEAT_*` constant — no struct changes and no existing board files
+/// touched.
 #[derive(Debug)]
 pub struct FeatureRequirements {
-    /// Prerequisites for DDR5 I2C probing (SPD EEPROM + temperature sensors).
-    pub ddr5: &'static [Requirement],
+    pub entries: &'static [(&'static str, &'static [Requirement])],
 }
+
+impl FeatureRequirements {
+    /// No requirements for any feature.
+    pub const NONE: Self = Self { entries: &[] };
+
+    /// Look up requirements for a feature by name. Returns empty slice if
+    /// the feature has no declared requirements.
+    pub fn get(&self, feature: &str) -> &'static [Requirement] {
+        self.entries
+            .iter()
+            .find(|(name, _)| *name == feature)
+            .map(|(_, reqs)| *reqs)
+            .unwrap_or(&[])
+    }
+}
+
+/// Feature name constants for use with [`FeatureRequirements`].
+pub const FEAT_DDR5: &str = "ddr5";
 
 /// DDR5 I2C bus topology for direct SPD/temperature probing.
 ///
@@ -345,7 +366,7 @@ mod tests {
             nct_voltage_scaling: None,
             dimm_labels: &[],
             ddr5_bus_config: None,
-            requirements: FeatureRequirements { ddr5: &[] },
+            requirements: FeatureRequirements::NONE,
         };
         let labels = resolve_labels(&board);
         // Board override wins
@@ -367,10 +388,44 @@ mod tests {
             nct_voltage_scaling: None,
             dimm_labels: &[],
             ddr5_bus_config: None,
-            requirements: FeatureRequirements { ddr5: &[] },
+            requirements: FeatureRequirements::NONE,
         };
         let labels = resolve_labels(&board);
         assert_eq!(labels.len(), 1);
         assert_eq!(labels.get("hwmon/nct6798/in0").unwrap(), "Vcore");
+    }
+
+    #[test]
+    fn feature_requirements_none_returns_empty() {
+        assert!(FeatureRequirements::NONE.get(FEAT_DDR5).is_empty());
+        assert!(FeatureRequirements::NONE.get("nonexistent").is_empty());
+    }
+
+    #[test]
+    fn feature_requirements_get_hit() {
+        let reqs = FeatureRequirements {
+            entries: &[(
+                FEAT_DDR5,
+                &[Requirement::MinBiosVersion {
+                    version: 1317,
+                    hint: "test",
+                }],
+            )],
+        };
+        assert_eq!(reqs.get(FEAT_DDR5).len(), 1);
+    }
+
+    #[test]
+    fn feature_requirements_get_miss() {
+        let reqs = FeatureRequirements {
+            entries: &[(
+                FEAT_DDR5,
+                &[Requirement::MinBiosVersion {
+                    version: 1317,
+                    hint: "test",
+                }],
+            )],
+        };
+        assert!(reqs.get("ddr6").is_empty());
     }
 }

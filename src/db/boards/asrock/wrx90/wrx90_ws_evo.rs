@@ -1,4 +1,6 @@
-use crate::db::boards::{BoardTemplate, Ddr5BusConfig, FeatureRequirements, Platform, Requirement};
+use crate::db::boards::{
+    BoardTemplate, Ddr5BusConfig, FEAT_DDR5, FeatureRequirements, Platform, Requirement,
+};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["wrx90"],
@@ -50,8 +52,11 @@ pub static BOARD: BoardTemplate = BoardTemplate {
         slots_per_bus: 4,
     }),
     requirements: FeatureRequirements {
-        ddr5: &[Requirement::BiosSetting {
-            description: "Enable I2C/SPD passthrough in BIOS Advanced settings",
-        }],
+        entries: &[(
+            FEAT_DDR5,
+            &[Requirement::BiosSetting {
+                description: "Enable I2C/SPD passthrough in BIOS Advanced settings",
+            }],
+        )],
     },
 };

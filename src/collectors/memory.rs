@@ -21,7 +21,11 @@ pub fn collect(direct_io: bool, board: Option<&'static BoardTemplate>) -> Memory
     // Enrich DIMMs with SPD EEPROM data on supported boards (requires --direct-io).
     if let Some(b) = direct_io.then_some(board).flatten() {
         if let Some(ddr5_config) = b.ddr5_bus_config {
-            enrich_dimms_with_spd(&mut dimms, ddr5_config, b.requirements.ddr5);
+            enrich_dimms_with_spd(
+                &mut dimms,
+                ddr5_config,
+                b.requirements.get(crate::db::boards::FEAT_DDR5),
+            );
         }
     }
 

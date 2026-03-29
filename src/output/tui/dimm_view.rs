@@ -269,7 +269,7 @@ fn find_dimm_temp(
     suffix: &str,
 ) -> Option<f64> {
     let (bus, addr) = i2c_key?;
-    let sensor_name = format!("bus{}_{:#04x}_{}_temp", bus, addr, suffix);
+    let sensor_name = crate::sensors::i2c::ddr5_temp::sensor_name(bus, addr, suffix);
     snapshot
         .iter()
         .find(|(id, _)| id.sensor == sensor_name)
@@ -290,7 +290,7 @@ fn format_temp_with_spark(
         .unwrap_or_else(|| "    -  ".into());
 
     let sensor_name =
-        i2c_key.map(|(bus, addr)| format!("bus{}_{:#04x}_{}_temp", bus, addr, suffix));
+        i2c_key.map(|(bus, addr)| crate::sensors::i2c::ddr5_temp::sensor_name(bus, addr, suffix));
     let key = sensor_name.and_then(|name| {
         snapshot
             .iter()

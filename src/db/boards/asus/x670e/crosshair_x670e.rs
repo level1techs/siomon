@@ -14,5 +14,5 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     nct_voltage_scaling: Some(&voltage_scaling::ASUS_AM5_NCT6798),
     dimm_labels: &[],
     ddr5_bus_config: None,
-    requirements: FeatureRequirements { ddr5: &[] },
+    requirements: FeatureRequirements::NONE,
 };

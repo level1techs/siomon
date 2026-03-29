@@ -28,6 +28,12 @@ const JEDEC_DDR5_DEVICE_ID: u8 = 0x51;
 /// Resolution of fractional temperature bits (°C per LSB).
 const TEMP_LSB: f64 = 0.0625;
 
+/// Build the sensor name component for a DDR5 temp sensor ID.
+/// Shared between sensor discovery and TUI DIMM view matching.
+pub fn sensor_name(bus: u32, hub_addr: u16, suffix: &str) -> String {
+    format!("bus{}_{:#04x}_{}_temp", bus, hub_addr, suffix)
+}
+
 /// DDR5 I2C address ranges for each sensor type.
 const HUB_ADDR_BASE: u16 = 0x50; // SPD5118 hub
 const TS0_ADDR_BASE: u16 = 0x30; // TS5111 sub-channel A
@@ -147,12 +153,7 @@ impl Ddr5TempSource {
                         let id = SensorId {
                             source: "i2c".into(),
                             chip: sensor_type.chip_name().into(),
-                            sensor: format!(
-                                "bus{}_{:#04x}_{}_temp",
-                                bus_num,
-                                hub_addr,
-                                sensor_type.sensor_suffix()
-                            ),
+                            sensor: sensor_name(bus_num, hub_addr, sensor_type.sensor_suffix()),
                         };
                         log::debug!(
                             "DDR5 temp: found {} at bus {} addr {:#04x} -> {}",
@@ -346,14 +347,13 @@ mod tests {
 
     #[test]
     fn sensor_id_format() {
+        assert_eq!(sensor_name(1, 0x50, "hub"), "bus1_0x50_hub_temp");
+        assert_eq!(sensor_name(2, 0x53, "ts1"), "bus2_0x53_ts1_temp");
+
         let id = SensorId {
             source: "i2c".into(),
             chip: SensorType::Ts0.chip_name().into(),
-            sensor: format!(
-                "bus1_{:#04x}_{}_temp",
-                0x50u16,
-                SensorType::Ts0.sensor_suffix()
-            ),
+            sensor: sensor_name(1, 0x50, SensorType::Ts0.sensor_suffix()),
         };
         assert_eq!(id.to_string(), "i2c/ts5111/bus1_0x50_ts0_temp");
     }
