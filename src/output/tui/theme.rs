@@ -386,58 +386,100 @@ impl TuiTheme {
     pub fn sparkline_color(&self, category: SensorCategory, fraction: f64) -> Color {
         let t = fraction.clamp(0.0, 1.0);
 
-        if self.color_level == ColorLevel::None {
-            return Color::Reset;
+        match self.color_level {
+            ColorLevel::None => {
+                // Grayscale: dark gray (idle) → white (active) using 232-255 ramp
+                let idx = 232 + (t * 23.0) as u8;
+                Color::Indexed(idx)
+            }
+            ColorLevel::Basic => Self::sparkline_basic(category, t),
+            ColorLevel::Color256 => Self::sparkline_256(category, t),
+            ColorLevel::TrueColor => Self::sparkline_rgb(category, t),
         }
+    }
 
-        if self.color_level >= ColorLevel::TrueColor {
-            return match category {
-                // Dim red-orange → bright red-orange
-                SensorCategory::Temperature => Color::Rgb(
-                    (120.0 + t * 135.0) as u8,
-                    (40.0 + t * 50.0) as u8,
-                    (20.0 + t * 20.0) as u8,
-                ),
-                // Near-black → bright cyan (idle cores are dark)
-                SensorCategory::Utilization => Color::Rgb(
-                    (5.0 + t * 85.0) as u8,
-                    (15.0 + t * 240.0) as u8,
-                    (20.0 + t * 235.0) as u8,
-                ),
-                // Dim magenta → bright magenta
-                SensorCategory::Power | SensorCategory::Current => Color::Rgb(
-                    (100.0 + t * 155.0) as u8,
-                    (40.0 + t * 40.0) as u8,
-                    (120.0 + t * 135.0) as u8,
-                ),
-                // Dim blue → bright blue
-                SensorCategory::Voltage => Color::Rgb(
-                    (60.0 + t * 80.0) as u8,
-                    (80.0 + t * 100.0) as u8,
-                    (160.0 + t * 95.0) as u8,
-                ),
-                // Dim cyan → bright cyan
-                SensorCategory::Frequency => Color::Rgb(
-                    (40.0 + t * 80.0) as u8,
-                    (140.0 + t * 115.0) as u8,
-                    (160.0 + t * 95.0) as u8,
-                ),
-                // Dim gray → bright white
-                _ => {
-                    let v = (100.0 + t * 155.0) as u8;
-                    Color::Rgb(v, v, v)
-                }
-            };
-        }
-
-        // Basic/256 fallback: single color per category
+    /// Per-category gradient as floating-point RGB (0.0–255.0).
+    fn gradient_rgb(category: SensorCategory, t: f64) -> (f64, f64, f64) {
         match category {
-            SensorCategory::Temperature => self.panel_thermal,
-            SensorCategory::Utilization => self.panel_cpu,
-            SensorCategory::Power | SensorCategory::Current => self.power,
-            SensorCategory::Voltage => self.voltage,
-            SensorCategory::Frequency => self.info,
-            _ => self.muted,
+            // Dim red-orange → bright red-orange
+            SensorCategory::Temperature => (120.0 + t * 135.0, 40.0 + t * 50.0, 20.0 + t * 20.0),
+            // Near-black → bright cyan (idle cores are dark)
+            SensorCategory::Utilization => (5.0 + t * 85.0, 15.0 + t * 240.0, 20.0 + t * 235.0),
+            // Dim magenta → bright magenta
+            SensorCategory::Power | SensorCategory::Current => {
+                (100.0 + t * 155.0, 40.0 + t * 40.0, 120.0 + t * 135.0)
+            }
+            // Dim blue → bright blue
+            SensorCategory::Voltage => (60.0 + t * 80.0, 80.0 + t * 100.0, 160.0 + t * 95.0),
+            // Dim cyan → bright cyan
+            SensorCategory::Frequency => (40.0 + t * 80.0, 140.0 + t * 115.0, 160.0 + t * 95.0),
+            // Dim gray → bright white
+            _ => {
+                let v = 100.0 + t * 155.0;
+                (v, v, v)
+            }
+        }
+    }
+
+    /// 24-bit RGB gradient.
+    fn sparkline_rgb(category: SensorCategory, t: f64) -> Color {
+        let (r, g, b) = Self::gradient_rgb(category, t);
+        Color::Rgb(r as u8, g as u8, b as u8)
+    }
+
+    /// 256-color palette gradient using the 6×6×6 color cube (indices 16-231).
+    fn sparkline_256(category: SensorCategory, t: f64) -> Color {
+        let (r, g, b) = Self::gradient_rgb(category, t);
+        Color::Indexed(rgb_to_cube(r, g, b))
+    }
+
+    /// 16-color ANSI gradient: 2-3 intensity steps per category.
+    fn sparkline_basic(category: SensorCategory, t: f64) -> Color {
+        match category {
+            SensorCategory::Temperature => {
+                if t < 0.5 {
+                    Color::Red
+                } else {
+                    Color::LightRed
+                }
+            }
+            SensorCategory::Utilization => {
+                if t < 0.33 {
+                    Color::DarkGray
+                } else if t < 0.66 {
+                    Color::Cyan
+                } else {
+                    Color::LightCyan
+                }
+            }
+            SensorCategory::Power | SensorCategory::Current => {
+                if t < 0.5 {
+                    Color::Magenta
+                } else {
+                    Color::LightMagenta
+                }
+            }
+            SensorCategory::Voltage => {
+                if t < 0.5 {
+                    Color::Blue
+                } else {
+                    Color::LightBlue
+                }
+            }
+            SensorCategory::Frequency => {
+                if t < 0.5 {
+                    Color::Cyan
+                } else {
+                    Color::LightCyan
+                }
+            }
+            _ => {
+                if t < 0.5 {
+                    Color::DarkGray
+                } else {
+                    Color::White
+                }
+            }
         }
     }
 
@@ -474,4 +516,26 @@ impl TuiTheme {
             _ => Style::default(),
         }
     }
+}
+
+/// Map an RGB value (0.0–255.0 per channel) to the nearest xterm 6×6×6 cube index (16-231).
+/// The cube levels are non-linear: 0, 95, 135, 175, 215, 255.
+fn rgb_to_cube(r: f64, g: f64, b: f64) -> u8 {
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+    fn nearest(v: f64) -> u8 {
+        let v = v.clamp(0.0, 255.0) as u8;
+        let mut best = 0u8;
+        let mut best_dist = u8::MAX;
+        for (i, &level) in LEVELS.iter().enumerate() {
+            let dist = v.abs_diff(level);
+            if dist < best_dist {
+                best_dist = dist;
+                best = i as u8;
+            }
+        }
+        best
+    }
+
+    16 + 36 * nearest(r) + 6 * nearest(g) + nearest(b)
 }
