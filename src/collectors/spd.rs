@@ -166,9 +166,21 @@ fn read_spd_eeprom(bus: u32, addr: u16) -> Option<SpdDump> {
 
             match dev.read_i2c_block_data(reg, len) {
                 Ok(bytes) => {
+                    if bytes.len() != len as usize {
+                        log::warn!(
+                            "SPD: short read page {} offset {} on bus {} addr {:#04x}: got {} expected {}",
+                            page,
+                            chunk_start,
+                            bus,
+                            addr,
+                            bytes.len(),
+                            len
+                        );
+                        ok = false;
+                        break;
+                    }
                     let dst_start = offset + chunk_start as usize;
-                    let copy_len = bytes.len().min(len as usize);
-                    eeprom[dst_start..dst_start + copy_len].copy_from_slice(&bytes[..copy_len]);
+                    eeprom[dst_start..dst_start + len as usize].copy_from_slice(&bytes);
                 }
                 Err(e) => {
                     log::warn!(
