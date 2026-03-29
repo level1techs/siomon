@@ -556,7 +556,7 @@ mod tests {
         data[5] = 0x21; // 17 rows, 10 cols
         data[6] = 0x00; // x4
         data[7] = 0x02; // 4 bank groups, 1 bank/group
-                        // Set a CAS latency bit so the vec isn't empty
+        // Set a CAS latency bit so the vec isn't empty
         data[24] = 0x01; // CL 20
 
         let spd = parse_ddr5_spd(&data).unwrap();
