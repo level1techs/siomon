@@ -280,7 +280,13 @@ fn probe_ddr5_sensor(bus: u32, addr: u16) -> bool {
     match dev.read_word_data(MR_TEMPERATURE) {
         Ok(raw) => {
             let masked = raw & 0x1FFF;
-            let temp = masked as f64 * TEMP_LSB;
+            // Sign-extend the 13-bit value (same as read_temperature_cached).
+            let temp = if raw & 0x1000 != 0 {
+                let signed = (masked as i16) | !0x1FFF_u16 as i16;
+                (signed as f64) * TEMP_LSB
+            } else {
+                (masked as f64) * TEMP_LSB
+            };
             if !(-40.0..=150.0).contains(&temp) {
                 log::debug!(
                     "DDR5 temp: implausible temperature on bus {} addr {:#04x}: raw={:#06x} temp={:.2}",

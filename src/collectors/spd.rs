@@ -377,7 +377,7 @@ fn parse_cas_latencies(data: &[u8; EEPROM_SIZE]) -> Vec<u32> {
 fn parse_jedec_manufacturer(data: &[u8; EEPROM_SIZE]) -> Option<String> {
     // Strip parity bits (bit 7) from both bytes.
     let bank = data[512] & 0x7F;
-    let id = data[513];
+    let id = data[513] & 0x7F;
     if bank == 0 && id == 0 {
         return None;
     }
@@ -510,8 +510,14 @@ mod tests {
 
     #[test]
     fn test_jedec_manufacturer_parity() {
-        // Bank byte 0x86 has parity bit set; actual bank = 6 → Bank 7
-        assert_eq!(jedec_manufacturer_name(6, 0x6D), "V-Color");
+        // Test through parse_jedec_manufacturer to exercise parity stripping.
+        // Bank byte 0x86 has parity bit set; actual bank = 6 → Bank 7 (V-Color).
+        // ID byte 0xED has parity bit set; actual ID = 0x6D.
+        let mut data = [0u8; EEPROM_SIZE];
+        data[512] = 0x86; // bank with parity
+        data[513] = 0xED; // ID with parity
+        let vendor = parse_jedec_manufacturer(&data).unwrap();
+        assert_eq!(vendor, "V-Color");
     }
 
     #[test]

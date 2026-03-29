@@ -104,7 +104,7 @@ impl SmbusDevice {
     /// SMBus I2C block-data protocol.
     ///
     /// Returns the bytes actually read. The kernel limits each transfer
-    /// to [`I2C_SMBUS_BLOCK_MAX`] (32) bytes.
+    /// to `I2C_SMBUS_BLOCK_MAX` (32) bytes.
     pub fn read_i2c_block_data(&self, register: u8, length: u8) -> std::io::Result<Vec<u8>> {
         let len = length.min(32);
         let mut data = I2cSmbusData { block: [0u8; 34] };
