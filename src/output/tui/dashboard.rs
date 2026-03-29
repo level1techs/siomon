@@ -131,7 +131,7 @@ pub fn render(
 
         // Status bar
         let status = Paragraph::new(format!(
-            " q: quit | d: tree view | t: theme | /: search | {sensor_count} sensors | {elapsed_str}"
+            " q: quit | d: tree view | m: DIMM | t: theme | /: search | {sensor_count} sensors | {elapsed_str}"
         ))
         .style(theme.status_style());
         frame.render_widget(status, outer[2]);
