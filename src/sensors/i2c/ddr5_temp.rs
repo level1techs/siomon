@@ -109,7 +109,7 @@ impl Ddr5TempSource {
         }
 
         let mut sensors = Vec::new();
-        let mut dimm_index: u32 = 0;
+        let mut dimm_counter: u32 = 0;
 
         for &bus_num in &candidate_bus_nums {
             log::debug!("DDR5 temp: scanning bus {}", bus_num);
@@ -136,17 +136,21 @@ impl Ddr5TempSource {
                         };
                         let label = format!(
                             "DIMM {} {} (bus {} slot {})",
-                            dimm_index,
+                            dimm_counter,
                             sensor_type.label_prefix(),
                             bus_num,
                             slot
                         );
+                        // Sensor ID uses bus/hub_addr as a stable key that matches
+                        // the SPD EEPROM's i2c_bus/i2c_addr on DimmInfo, rather
+                        // than a sequential index that depends on enumeration order.
                         let id = SensorId {
                             source: "i2c".into(),
                             chip: sensor_type.chip_name().into(),
                             sensor: format!(
-                                "dimm{}_{}_temp",
-                                dimm_index,
+                                "bus{}_{:#04x}_{}_temp",
+                                bus_num,
+                                hub_addr,
                                 sensor_type.sensor_suffix()
                             ),
                         };
@@ -161,7 +165,7 @@ impl Ddr5TempSource {
                     }
                 }
 
-                dimm_index += 1;
+                dimm_counter += 1;
             }
         }
 
@@ -345,9 +349,13 @@ mod tests {
         let id = SensorId {
             source: "i2c".into(),
             chip: SensorType::Ts0.chip_name().into(),
-            sensor: format!("dimm0_{}_temp", SensorType::Ts0.sensor_suffix()),
+            sensor: format!(
+                "bus1_{:#04x}_{}_temp",
+                0x50u16,
+                SensorType::Ts0.sensor_suffix()
+            ),
         };
-        assert_eq!(id.to_string(), "i2c/ts5111/dimm0_ts0_temp");
+        assert_eq!(id.to_string(), "i2c/ts5111/bus1_0x50_ts0_temp");
     }
 
     /// Verify temperature decoding matches SPD5118's encoding.

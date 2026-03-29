@@ -72,6 +72,12 @@ pub struct SpdData {
     pub spd_manufacturer: Option<String>,
     /// SPD part number (from EEPROM bytes 521–550).
     pub spd_part_number: Option<String>,
+    /// I2C bus number where this SPD was read (for matching temperature sensors).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub i2c_bus: Option<u32>,
+    /// I2C hub address where this SPD was read (0x50–0x57).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub i2c_addr: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

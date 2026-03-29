@@ -71,8 +71,7 @@ pub fn render(
         let rows: Vec<Row<'_>> = memory_info
             .dimms
             .iter()
-            .enumerate()
-            .map(|(i, dimm)| {
+            .map(|dimm| {
                 let channel = dimm.bank_locator.as_deref().unwrap_or("?");
 
                 let size_gb = dimm.size_bytes / (1024 * 1024 * 1024);
@@ -128,17 +127,39 @@ pub fn render(
                     .or(dimm.part_number.as_deref())
                     .unwrap_or("?");
 
-                // Live temperatures — find matching sensors
-                let hub_temp = find_dimm_temp(snapshot, i, "hub");
-                let ts0_temp = find_dimm_temp(snapshot, i, "ts0");
-                let ts1_temp = find_dimm_temp(snapshot, i, "ts1");
+                // Live temperatures — match by I2C bus/addr from SPD enrichment.
+                let i2c_key = dimm
+                    .spd
+                    .as_ref()
+                    .and_then(|spd| Some((spd.i2c_bus?, spd.i2c_addr?)));
+                let hub_temp = find_dimm_temp(snapshot, i2c_key, "hub");
+                let ts0_temp = find_dimm_temp(snapshot, i2c_key, "ts0");
+                let ts1_temp = find_dimm_temp(snapshot, i2c_key, "ts1");
 
-                let hub_str =
-                    format_temp_with_spark(hub_temp, snapshot, history, i, "hub", spark_width);
-                let ts0_str =
-                    format_temp_with_spark(ts0_temp, snapshot, history, i, "ts0", spark_width);
-                let ts1_str =
-                    format_temp_with_spark(ts1_temp, snapshot, history, i, "ts1", spark_width);
+                let hub_str = format_temp_with_spark(
+                    hub_temp,
+                    snapshot,
+                    history,
+                    i2c_key,
+                    "hub",
+                    spark_width,
+                );
+                let ts0_str = format_temp_with_spark(
+                    ts0_temp,
+                    snapshot,
+                    history,
+                    i2c_key,
+                    "ts0",
+                    spark_width,
+                );
+                let ts1_str = format_temp_with_spark(
+                    ts1_temp,
+                    snapshot,
+                    history,
+                    i2c_key,
+                    "ts1",
+                    spark_width,
+                );
 
                 let temp_style = |t: Option<f64>| match t {
                     Some(v) if v >= 80.0 => Style::default().fg(Color::Red),
@@ -241,13 +262,14 @@ pub fn render(
     Ok(())
 }
 
-/// Find a DIMM temperature reading by index and sensor suffix (hub/ts0/ts1).
+/// Find a DIMM temperature reading by I2C bus/addr and sensor suffix (hub/ts0/ts1).
 fn find_dimm_temp(
     snapshot: &[(SensorId, SensorReading)],
-    dimm_index: usize,
+    i2c_key: Option<(u32, u16)>,
     suffix: &str,
 ) -> Option<f64> {
-    let sensor_name = format!("dimm{}_{}_temp", dimm_index, suffix);
+    let (bus, addr) = i2c_key?;
+    let sensor_name = format!("bus{}_{:#04x}_{}_temp", bus, addr, suffix);
     snapshot
         .iter()
         .find(|(id, _)| id.sensor == sensor_name)
@@ -259,7 +281,7 @@ fn format_temp_with_spark(
     temp: Option<f64>,
     snapshot: &[(SensorId, SensorReading)],
     history: &SensorHistory,
-    dimm_index: usize,
+    i2c_key: Option<(u32, u16)>,
     suffix: &str,
     spark_width: usize,
 ) -> String {
@@ -267,11 +289,14 @@ fn format_temp_with_spark(
         .map(|t| format!("{t:5.1}°C"))
         .unwrap_or_else(|| "    -  ".into());
 
-    let sensor_name = format!("dimm{}_{}_temp", dimm_index, suffix);
-    let key = snapshot
-        .iter()
-        .find(|(id, _)| id.sensor == sensor_name)
-        .map(|(id, _)| format!("{}/{}/{}", id.source, id.chip, id.sensor));
+    let sensor_name =
+        i2c_key.map(|(bus, addr)| format!("bus{}_{:#04x}_{}_temp", bus, addr, suffix));
+    let key = sensor_name.and_then(|name| {
+        snapshot
+            .iter()
+            .find(|(id, _)| id.sensor == name)
+            .map(|(id, _)| format!("{}/{}/{}", id.source, id.chip, id.sensor))
+    });
 
     let spark = key
         .and_then(|k| history.data.get(&k))

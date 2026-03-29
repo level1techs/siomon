@@ -70,7 +70,9 @@ pub fn read_ddr5_spd(
                         addr,
                         serial
                     );
-                    if let Some(parsed) = parse_ddr5_spd(&dump.data) {
+                    if let Some(mut parsed) = parse_ddr5_spd(&dump.data) {
+                        parsed.i2c_bus = Some(bus);
+                        parsed.i2c_addr = Some(addr);
                         results.push((serial, parsed));
                     }
                 }
@@ -328,6 +330,8 @@ fn parse_ddr5_spd(data: &[u8; EEPROM_SIZE]) -> Option<SpdData> {
         cas_latencies,
         spd_manufacturer,
         spd_part_number,
+        i2c_bus: None,
+        i2c_addr: None,
     })
 }
 
