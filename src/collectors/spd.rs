@@ -224,7 +224,7 @@ fn read_spd_eeprom(bus: u32, addr: u16) -> Option<SpdDump> {
     if !restored {
         log::error!(
             "SPD: failed to restore page 0 on bus {} addr {:#04x} after 5 attempts — \
-             temperature reads may return garbage until next reboot",
+             temperature reads may return garbage until page 0 is restored",
             bus,
             addr
         );
@@ -556,7 +556,7 @@ mod tests {
         data[5] = 0x21; // 17 rows, 10 cols
         data[6] = 0x00; // x4
         data[7] = 0x02; // 4 bank groups, 1 bank/group
-        // Set a CAS latency bit so the vec isn't empty
+                        // Set a CAS latency bit so the vec isn't empty
         data[24] = 0x01; // CL 20
 
         let spd = parse_ddr5_spd(&data).unwrap();
