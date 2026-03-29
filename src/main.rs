@@ -18,6 +18,7 @@ fn main() {
 
     // Build sensor label overrides from board name + config file
     let board_name = db::sensor_labels::read_board_name();
+    let board = board_name.as_deref().and_then(db::boards::lookup_board);
     let (label_overrides, platform) =
         db::sensor_labels::load_labels(board_name.as_deref(), &config.sensor_labels);
 
@@ -33,18 +34,18 @@ fn main() {
 
     // TUI monitor mode
     if cli.tui {
-        run_monitor(&cli, &config, label_overrides, platform);
+        run_monitor(&cli, &config, label_overrides, platform, board);
         return;
     }
 
     // Sensor snapshot or one-shot commands
     if let Some(Commands::Sensors) = &cli.command {
-        run_sensor_snapshot(&cli, &config, &label_overrides, platform);
+        run_sensor_snapshot(&cli, &config, &label_overrides, platform, board);
         return;
     }
 
     // Standard hardware info collection
-    let info = collect_all(&cli, &config);
+    let info = collect_all(&cli, &config, board);
 
     let print_formatted = |info: &SystemInfo| match cli.format {
         #[cfg(feature = "json")]
@@ -92,6 +93,7 @@ fn run_monitor(
     config: &config::SiomonConfig,
     label_overrides: std::collections::HashMap<String, String>,
     platform: db::boards::Platform,
+    board: Option<&'static db::boards::BoardTemplate>,
 ) {
     #[cfg(feature = "tui")]
     {
@@ -107,11 +109,12 @@ fn run_monitor(
             label_overrides,
             config.general.storage_exclude.clone(),
             platform,
+            board,
         );
         let _handle = poller.spawn();
 
         // Collect static memory/DIMM info for the TUI DIMM view.
-        let memory_info = collectors::memory::collect();
+        let memory_info = collectors::memory::collect(cli.direct_io, board);
 
         // Give poller a moment to collect initial data
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -156,7 +159,7 @@ fn run_monitor(
 
     #[cfg(not(feature = "tui"))]
     {
-        let _ = (cli, config, label_overrides, platform);
+        let _ = (cli, config, label_overrides, platform, board);
         eprintln!("TUI not available — compile with the 'tui' feature");
     }
 }
@@ -166,6 +169,7 @@ fn run_sensor_snapshot(
     config: &config::SiomonConfig,
     label_overrides: &std::collections::HashMap<String, String>,
     platform: db::boards::Platform,
+    board: Option<&'static db::boards::BoardTemplate>,
 ) {
     let readings = sensors::poller::snapshot(
         cli.no_nvidia,
@@ -173,6 +177,7 @@ fn run_sensor_snapshot(
         label_overrides,
         &config.general.storage_exclude,
         platform,
+        board,
     );
     let mut sorted: Vec<_> = readings.into_iter().collect();
     sorted.sort_by(|a, b| a.0.natural_cmp(&b.0));
@@ -228,8 +233,13 @@ fn join_or_default<T: Default>(result: std::thread::Result<T>, name: &str) -> T 
     }
 }
 
-fn collect_all(cli: &Cli, config: &config::SiomonConfig) -> SystemInfo {
+fn collect_all(
+    cli: &Cli,
+    config: &config::SiomonConfig,
+    board: Option<&'static db::boards::BoardTemplate>,
+) -> SystemInfo {
     let no_nvidia = cli.no_nvidia;
+    let direct_io = cli.direct_io;
     let storage_exclude = config.general.storage_exclude.clone();
 
     let hostname =
@@ -251,7 +261,7 @@ fn collect_all(cli: &Cli, config: &config::SiomonConfig) -> SystemInfo {
                     Vec::new()
                 })
             });
-            let h_mem = s.spawn(collectors::memory::collect);
+            let h_mem = s.spawn(move || collectors::memory::collect(direct_io, board));
             let h_board = s.spawn(collectors::motherboard::collect);
             let h_gpu = s.spawn(move || collectors::gpu::collect(no_nvidia));
             let h_stor = s.spawn(|| collectors::storage::collect(&storage_exclude));

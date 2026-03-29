@@ -1,2 +1,2 @@
-pub mod dgx_spark;
-pub mod jetson_thor;
+pub mod gb10;
+pub mod thor;

@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 use std::io::{self, Stdout};
 
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, LineGauge, Paragraph};
-use ratatui::Terminal;
 
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading};
 
-use super::{format_precision, sparkline_spans, theme::TuiTheme, SensorHistory, SystemSummary};
+use super::{SensorHistory, SystemSummary, format_precision, sparkline_spans, theme::TuiTheme};
 
 struct LayoutParams {
     num_columns: u8,

@@ -5,18 +5,18 @@
 
 use std::io::{self, Stdout};
 
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
-use ratatui::Terminal;
 
 use crate::model::memory::MemoryInfo;
 use crate::model::sensor::{SensorId, SensorReading};
 
 use super::theme::TuiTheme;
-use super::{sparkline_str, SensorHistory};
+use super::{SensorHistory, sparkline_str};
 
 pub fn render(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -286,9 +286,5 @@ fn format_temp_with_spark(
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..max]
-    }
+    if s.len() <= max { s } else { &s[..max] }
 }

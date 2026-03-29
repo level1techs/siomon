@@ -1,19 +1,19 @@
-//! DDR5 DIMM temperature sensors via DesignWare I2C buses.
+//! DDR5 DIMM temperature sensors via direct I2C probing.
 //!
-//! On whitelisted AMD boards, the DesignWare I2C controllers bypass the FCH's
-//! SPD mux
+//! On whitelisted boards, dedicated I2C controllers bypass the FCH's SPD mux
 //! and expose three temperature sensors per DIMM:
 //!
 //! - **Hub** (0x50–0x53): SPD5118 hub die temperature
 //! - **TS0** (0x30–0x33): DRAM die / sub-channel A temperature (TS5111)
 //! - **TS1** (0x10–0x13): DRAM die / sub-channel B temperature (TS5111)
 //!
-//! This path is restricted to an explicit board whitelist so direct probing
-//! stays off unknown systems.
+//! Boards opt in by setting `ddr5_bus_config` in their `BoardTemplate`
+//! (see `db/boards/mod.rs`). Requires `--direct-io`.
 
+use crate::db::boards::Ddr5BusConfig;
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
-use crate::sensors::i2c::amd_ddr5;
-use crate::sensors::i2c::bus_scan::{self, I2cAdapterType, I2cBus};
+use crate::sensors::i2c::bus_scan;
+use crate::sensors::i2c::ddr5;
 use crate::sensors::i2c::smbus_io::SmbusDevice;
 
 /// MR0 — device type register. 0x51 for both SPD5118 and TS5111.
@@ -86,35 +86,21 @@ pub struct Ddr5TempSource {
 }
 
 impl Ddr5TempSource {
-    /// Discover DDR5 temperature sensors on whitelisted AMD DesignWare I2C
-    /// buses.
+    /// Discover DDR5 temperature sensors on whitelisted I2C buses.
     ///
-    /// Returns an empty source on unsupported boards or if no devices are found.
-    pub fn discover() -> Self {
-        let Some(board) = amd_ddr5::detect_board() else {
-            log::debug!("DDR5 temp: skipping probe on unsupported board");
+    /// Returns an empty source if no DDR5 bus config or no devices are found.
+    pub fn discover(ddr5_bus_config: Option<&Ddr5BusConfig>) -> Self {
+        let Some(config) = ddr5_bus_config else {
             return Self {
                 sensors: Vec::new(),
             };
         };
 
         let all_buses = bus_scan::enumerate_buses();
-        let candidate_bus_nums = amd_ddr5::designware_bus_nums(board, &all_buses);
-        if let Some(board_name) = amd_ddr5::board_name() {
-            log::debug!(
-                "DDR5 temp: supported board '{}' candidate DesignWare buses {:?}",
-                board_name,
-                candidate_bus_nums
-            );
-        }
-        let dw_buses: Vec<&I2cBus> = all_buses
-            .iter()
-            .filter(|b| b.adapter_type == I2cAdapterType::DesignWare)
-            .filter(|b| candidate_bus_nums.contains(&b.bus_num))
-            .collect();
+        let candidate_bus_nums = ddr5::filter_buses(config, &all_buses);
 
-        if dw_buses.is_empty() {
-            log::debug!("DDR5 temp: no whitelisted AMD DDR5 DesignWare buses found");
+        if candidate_bus_nums.is_empty() {
+            log::debug!("DDR5 temp: no whitelisted I2C buses found");
             return Self {
                 sensors: Vec::new(),
             };
@@ -123,15 +109,15 @@ impl Ddr5TempSource {
         let mut sensors = Vec::new();
         let mut dimm_index: u32 = 0;
 
-        for bus in &dw_buses {
-            log::debug!("DDR5 temp: scanning bus {}", bus.bus_num);
-            for slot in 0..board.slots_per_bus {
+        for &bus_num in &candidate_bus_nums {
+            log::debug!("DDR5 temp: scanning bus {}", bus_num);
+            for slot in 0..config.slots_per_bus {
                 // Probe hub first to confirm a DIMM exists in this slot.
                 let hub_addr = HUB_ADDR_BASE + slot;
-                if !probe_ddr5_sensor(bus.bus_num, hub_addr) {
+                if !probe_ddr5_sensor(bus_num, hub_addr) {
                     log::debug!(
                         "DDR5 temp: no hub sensor on bus {} slot {} addr {:#04x}",
-                        bus.bus_num,
+                        bus_num,
                         slot,
                         hub_addr
                     );
@@ -140,12 +126,12 @@ impl Ddr5TempSource {
 
                 for sensor_type in [SensorType::Hub, SensorType::Ts0, SensorType::Ts1] {
                     let addr = sensor_type.base_addr() + slot;
-                    if probe_ddr5_sensor(bus.bus_num, addr) {
+                    if probe_ddr5_sensor(bus_num, addr) {
                         let label = format!(
                             "DIMM {} {} (bus {} slot {})",
                             dimm_index,
                             sensor_type.label_prefix(),
-                            bus.bus_num,
+                            bus_num,
                             slot
                         );
                         let id = SensorId {
@@ -160,12 +146,12 @@ impl Ddr5TempSource {
                         log::info!(
                             "DDR5 temp: found {} at bus {} addr {:#04x} -> {}",
                             sensor_type.label_prefix(),
-                            bus.bus_num,
+                            bus_num,
                             addr,
                             id
                         );
                         sensors.push(TempSensor {
-                            bus: bus.bus_num,
+                            bus: bus_num,
                             addr,
                             label,
                             id,
@@ -331,12 +317,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_without_hardware() {
-        // On non-WRX90E or without hardware, discover returns empty.
-        // This test verifies the struct works even when empty.
-        let source = Ddr5TempSource {
-            sensors: Vec::new(),
-        };
+    fn discover_none_returns_empty() {
+        let source = Ddr5TempSource::discover(None);
         assert_eq!(source.sensor_count(), 0);
         assert!(source.poll().is_empty());
     }

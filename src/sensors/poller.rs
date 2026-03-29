@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::db::boards::Platform;
+use crate::db::boards::{BoardTemplate, Platform};
 use crate::model::sensor::{SensorId, SensorReading};
 use crate::sensors::{
     SensorSource, cpu_freq, cpu_util, disk_activity, gpu_sensors, hwmon, network_stats, rapl,
@@ -37,6 +37,7 @@ pub struct Poller {
     label_overrides: HashMap<String, String>,
     storage_exclude: Vec<String>,
     platform: Platform,
+    board: Option<&'static BoardTemplate>,
 }
 
 impl Poller {
@@ -50,6 +51,7 @@ impl Poller {
         label_overrides: HashMap<String, String>,
         storage_exclude: Vec<String>,
         platform: Platform,
+        board: Option<&'static BoardTemplate>,
     ) -> Self {
         Self {
             state,
@@ -60,6 +62,7 @@ impl Poller {
             label_overrides,
             storage_exclude,
             platform,
+            board,
         }
     }
 
@@ -85,6 +88,7 @@ impl Poller {
             &self.label_overrides,
             &self.storage_exclude,
             self.platform,
+            self.board,
         );
 
         log::info!("Sensor poller started: {} sources", sources.len());
@@ -186,6 +190,7 @@ fn discover_all_sources(
     label_overrides: &HashMap<String, String>,
     storage_exclude: &[String],
     platform: Platform,
+    board: Option<&'static BoardTemplate>,
 ) -> Vec<Box<dyn SensorSource>> {
     use std::thread;
     use std::time::Instant;
@@ -261,8 +266,9 @@ fn discover_all_sources(
                 dio_sources.push(Box::new(crate::sensors::i2c::pmbus::PmbusSource::discover(
                     &buses,
                 )));
+                let ddr5_config = board.and_then(|b| b.ddr5_bus_config);
                 dio_sources.push(Box::new(
-                    crate::sensors::i2c::ddr5_temp::Ddr5TempSource::discover(),
+                    crate::sensors::i2c::ddr5_temp::Ddr5TempSource::discover(ddr5_config),
                 ));
                 log::info!("I2C: enabled ({} buses)", buses.len());
 
@@ -324,6 +330,7 @@ pub fn snapshot(
     label_overrides: &HashMap<String, String>,
     storage_exclude: &[String],
     platform: Platform,
+    board: Option<&'static BoardTemplate>,
 ) -> HashMap<SensorId, SensorReading> {
     let mut sources = discover_all_sources(
         no_nvidia,
@@ -331,6 +338,7 @@ pub fn snapshot(
         label_overrides,
         storage_exclude,
         platform,
+        board,
     );
 
     // Short sleep for delta-based sources to have meaningful deltas

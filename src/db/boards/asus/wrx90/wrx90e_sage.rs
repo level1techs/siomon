@@ -1,4 +1,4 @@
-use super::super::{BoardTemplate, DimmSlotLabel, Platform};
+use crate::db::boards::{BoardTemplate, Ddr5BusConfig, DimmSlotLabel, Platform};
 use crate::db::voltage_scaling;
 
 pub static BOARD: BoardTemplate = BoardTemplate {
@@ -121,4 +121,8 @@ pub static BOARD: BoardTemplate = BoardTemplate {
             label: "P0 Channel H DIMM 0 R1",
         },
     ],
+    ddr5_bus_config: Some(&Ddr5BusConfig {
+        i2c_buses: &[1, 2],
+        slots_per_bus: 4,
+    }),
 };

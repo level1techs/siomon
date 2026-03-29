@@ -1,17 +1,17 @@
-//! DDR5 SPD EEPROM reader via SPD5118 hub on whitelisted AMD DesignWare I2C
-//! buses.
+//! DDR5 SPD EEPROM reader via SPD5118 hub on whitelisted I2C buses.
 //!
-//! On AMD WRX90 boards the FCH's piix4_smbus intercepts SPD addresses 0x50–0x57,
+//! On some boards the FCH's piix4_smbus intercepts SPD addresses 0x50–0x57,
 //! returning garbled EEPROM data instead of SPD5118 management registers.
-//! The DesignWare I2C controllers (populated via ACPI) bypass this mux and
-//! give clean access to the SPD5118 hubs.
+//! Dedicated I2C controllers (populated via ACPI) bypass this mux and give
+//! clean access to the SPD5118 hubs.
 //!
-//! This module is scoped to an explicit board whitelist so direct probing stays
-//! off unknown systems.
+//! Boards opt in by setting `ddr5_bus_config` in their `BoardTemplate`
+//! (see `db/boards/mod.rs`). Requires `--direct-io`.
 
+use crate::db::boards::Ddr5BusConfig;
 use crate::model::memory::SpdData;
-use crate::sensors::i2c::amd_ddr5;
 use crate::sensors::i2c::bus_scan;
+use crate::sensors::i2c::ddr5;
 use crate::sensors::i2c::smbus_io::SmbusDevice;
 
 /// SPD5118 management register addresses.
@@ -41,29 +41,16 @@ pub struct SpdDump {
     pub data: [u8; EEPROM_SIZE],
 }
 
-/// Discover and read SPD EEPROMs on whitelisted AMD DesignWare I2C buses.
+/// Discover and read SPD EEPROMs on whitelisted I2C buses.
 ///
 /// Returns parsed `SpdData` paired with the serial number read from SPD
 /// bytes 517–520 for matching against SMBIOS DIMM entries.
-pub fn read_amd_ddr5_spd() -> Vec<(String, SpdData)> {
-    let Some(board) = amd_ddr5::detect_board() else {
-        log::debug!("SPD: skipping AMD DDR5 SPD scan on unsupported board");
-        return Vec::new();
-    };
-
+pub fn read_ddr5_spd(config: &Ddr5BusConfig) -> Vec<(String, SpdData)> {
     let buses = bus_scan::enumerate_buses();
-    let dw_buses = amd_ddr5::designware_bus_nums(board, &buses);
-
-    if let Some(board_name) = amd_ddr5::board_name() {
-        log::debug!(
-            "SPD: supported board '{}' scanning DesignWare buses {:?}",
-            board_name,
-            dw_buses
-        );
-    }
+    let dw_buses = ddr5::filter_buses(config, &buses);
 
     if dw_buses.is_empty() {
-        log::debug!("SPD: no whitelisted AMD DDR5 DesignWare I2C buses found");
+        log::debug!("SPD: no whitelisted I2C buses found");
         return Vec::new();
     }
 

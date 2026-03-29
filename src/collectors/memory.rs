@@ -1,9 +1,9 @@
+use crate::db::boards::BoardTemplate;
 use crate::model::memory::{DimmInfo, MemoryInfo, MemoryType};
 use crate::parsers::smbios;
 use crate::platform::procfs;
-use crate::sensors::i2c::amd_ddr5;
 
-pub fn collect() -> MemoryInfo {
+pub fn collect(direct_io: bool, board: Option<&'static BoardTemplate>) -> MemoryInfo {
     let meminfo = procfs::parse_meminfo();
 
     let total_bytes = meminfo.get("MemTotal").copied().unwrap_or(0);
@@ -18,9 +18,13 @@ pub fn collect() -> MemoryInfo {
         Some(dimms.len() as u32)
     };
 
-    // Enrich DIMMs with SPD EEPROM data on supported boards.
-    if amd_ddr5::detect_board().is_some() {
-        enrich_dimms_with_spd(&mut dimms);
+    // Enrich DIMMs with SPD EEPROM data on supported boards (requires --direct-io).
+    if let Some(ddr5_config) = direct_io
+        .then_some(board)
+        .flatten()
+        .and_then(|b| b.ddr5_bus_config)
+    {
+        enrich_dimms_with_spd(&mut dimms, ddr5_config);
     }
 
     MemoryInfo {
@@ -36,8 +40,8 @@ pub fn collect() -> MemoryInfo {
 }
 
 /// Read SPD EEPROMs and match them to SMBIOS DIMM entries by serial number.
-fn enrich_dimms_with_spd(dimms: &mut [DimmInfo]) {
-    let spd_results = super::spd::read_amd_ddr5_spd();
+fn enrich_dimms_with_spd(dimms: &mut [DimmInfo], ddr5_config: &crate::db::boards::Ddr5BusConfig) {
+    let spd_results = super::spd::read_ddr5_spd(ddr5_config);
     if spd_results.is_empty() {
         return;
     }
@@ -277,7 +281,7 @@ impl crate::collectors::Collector for MemoryCollector {
     }
 
     fn collect_into(&self, info: &mut crate::model::system::SystemInfo) {
-        info.memory = collect();
+        info.memory = collect(false, None);
     }
 }
 

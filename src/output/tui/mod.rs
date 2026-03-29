@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
-use ratatui::Terminal;
 
 use crate::model::memory::MemoryInfo;
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
@@ -417,7 +417,7 @@ fn run_loop(
                     &snapshot,
                     &history,
                     &elapsed_str,
-                    theme,
+                    &theme,
                 )?;
             }
         }

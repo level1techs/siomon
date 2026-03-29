@@ -1,4 +1,4 @@
-use super::super::{ASUS_AM5_NCT6798_LABELS, BoardTemplate, Platform};
+use crate::db::boards::{ASUS_AM5_NCT6798_LABELS, BoardTemplate, Platform};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["prime"],
@@ -13,4 +13,5 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     // No board-specific voltage scaling known
     nct_voltage_scaling: None,
     dimm_labels: &[],
+    ddr5_bus_config: None,
 };
