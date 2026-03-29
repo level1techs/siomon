@@ -387,12 +387,8 @@ impl TuiTheme {
         let t = fraction.clamp(0.0, 1.0);
 
         match self.color_level {
-            ColorLevel::None => {
-                // Grayscale: dark gray (idle) → white (active) using 232-255 ramp
-                let idx = 232 + (t * 23.0) as u8;
-                Color::Indexed(idx)
-            }
-            ColorLevel::Basic => Self::sparkline_basic(category, t),
+            ColorLevel::None => Color::Reset,
+            ColorLevel::Basic => self.sparkline_basic(category, t),
             ColorLevel::Color256 => Self::sparkline_256(category, t),
             ColorLevel::TrueColor => Self::sparkline_rgb(category, t),
         }
@@ -433,52 +429,18 @@ impl TuiTheme {
         Color::Indexed(rgb_to_cube(r, g, b))
     }
 
-    /// 16-color ANSI gradient: 2-3 intensity steps per category.
-    fn sparkline_basic(category: SensorCategory, t: f64) -> Color {
-        match category {
-            SensorCategory::Temperature => {
-                if t < 0.5 {
-                    Color::Red
-                } else {
-                    Color::LightRed
-                }
-            }
-            SensorCategory::Utilization => {
-                if t < 0.33 {
-                    Color::DarkGray
-                } else if t < 0.66 {
-                    Color::Cyan
-                } else {
-                    Color::LightCyan
-                }
-            }
-            SensorCategory::Power | SensorCategory::Current => {
-                if t < 0.5 {
-                    Color::Magenta
-                } else {
-                    Color::LightMagenta
-                }
-            }
-            SensorCategory::Voltage => {
-                if t < 0.5 {
-                    Color::Blue
-                } else {
-                    Color::LightBlue
-                }
-            }
-            SensorCategory::Frequency => {
-                if t < 0.5 {
-                    Color::Cyan
-                } else {
-                    Color::LightCyan
-                }
-            }
-            _ => {
-                if t < 0.5 {
-                    Color::DarkGray
-                } else {
-                    Color::White
-                }
+    /// 16-color ANSI gradient: dim (DarkGray) for low values, theme color for high.
+    fn sparkline_basic(&self, category: SensorCategory, t: f64) -> Color {
+        if t < 0.5 {
+            Color::DarkGray
+        } else {
+            match category {
+                SensorCategory::Temperature => self.panel_thermal,
+                SensorCategory::Utilization => self.panel_cpu,
+                SensorCategory::Power | SensorCategory::Current => self.power,
+                SensorCategory::Voltage => self.voltage,
+                SensorCategory::Frequency => self.info,
+                _ => self.muted,
             }
         }
     }
