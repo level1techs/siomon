@@ -111,10 +111,11 @@ fn run_monitor(
             platform,
             board,
         );
-        let _handle = poller.spawn();
-
-        // Collect static memory/DIMM info for the TUI DIMM view.
+        // Collect static memory/DIMM info before spawning the poller so that
+        // SPD EEPROM page-cycling cannot race with DDR5 temperature polling.
         let memory_info = collectors::memory::collect(cli.direct_io, board);
+
+        let _handle = poller.spawn();
 
         // Give poller a moment to collect initial data
         std::thread::sleep(std::time::Duration::from_millis(300));

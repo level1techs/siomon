@@ -202,18 +202,32 @@ fn read_spd_eeprom(bus: u32, addr: u16) -> Option<SpdDump> {
         }
     }
 
-    // Always restore page 0 so volatile registers remain accessible.
-    // Retry once if the first attempt fails (I2C contention under load).
-    if dev.write_byte_data(MR11_PAGE_SELECT, 0x00).is_err() {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        if dev.write_byte_data(MR11_PAGE_SELECT, 0x00).is_err() {
-            log::error!(
-                "SPD: failed to restore page 0 on bus {} addr {:#04x} — \
-                 temperature reads may return garbage until next reboot",
-                bus,
-                addr
-            );
+    // Always restore page 0 so volatile registers (temperature etc.) remain
+    // accessible. Retry with exponential backoff — a stuck page is the worst
+    // failure mode since it corrupts all subsequent reads until reboot.
+    let mut restored = false;
+    for delay_ms in [0, 1, 5, 10, 50] {
+        if delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
         }
+        if dev.write_byte_data(MR11_PAGE_SELECT, 0x00).is_ok() {
+            // Verify by reading MR11 back — bits [2:0] should be 0.
+            if dev
+                .read_byte_data(MR11_PAGE_SELECT)
+                .is_ok_and(|v| v & 0x07 == 0x00)
+            {
+                restored = true;
+                break;
+            }
+        }
+    }
+    if !restored {
+        log::error!(
+            "SPD: failed to restore page 0 on bus {} addr {:#04x} after 5 attempts — \
+             temperature reads may return garbage until next reboot",
+            bus,
+            addr
+        );
     }
 
     if !ok {

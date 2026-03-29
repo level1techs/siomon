@@ -19,6 +19,9 @@ use crate::sensors::i2c::smbus_io::SmbusDevice;
 /// MR0 — device type register. 0x51 for both SPD5118 and TS5111.
 const MR0_DEVICE_TYPE: u8 = 0x00;
 
+/// MR11 — NVM page select register (bits [2:0] = page 0-7).
+const MR11_PAGE_SELECT: u8 = 0x0B;
+
 /// MR31 — temperature data register (16-bit word read).
 const MR_TEMPERATURE: u8 = 0x31;
 
@@ -84,6 +87,7 @@ struct TempSensor {
     dev: SmbusDevice,
     label: String,
     id: SensorId,
+    is_hub: bool,
 }
 
 pub struct Ddr5TempSource {
@@ -162,7 +166,13 @@ impl Ddr5TempSource {
                             addr,
                             id
                         );
-                        sensors.push(TempSensor { dev, label, id });
+                        let is_hub = matches!(sensor_type, SensorType::Hub);
+                        sensors.push(TempSensor {
+                            dev,
+                            label,
+                            id,
+                            is_hub,
+                        });
                     }
                 }
 
@@ -191,6 +201,12 @@ impl Ddr5TempSource {
         let mut readings = Vec::new();
 
         for s in &self.sensors {
+            // Hub sensors (SPD5118) can be left on a non-zero page by the SPD
+            // EEPROM reader or by BMC/IPMI contention. Ensure page 0 before
+            // reading temperature so MR31 maps to the volatile register set.
+            if s.is_hub {
+                let _ = s.dev.write_byte_data(MR11_PAGE_SELECT, 0x00);
+            }
             match read_temperature_cached(&s.dev) {
                 Ok(temp_c) => {
                     readings.push((
@@ -273,7 +289,7 @@ fn probe_ddr5_sensor(bus: u32, addr: u16) -> bool {
     // Confirmed SPD5118/TS5111 — reset page 0 on hub addresses so
     // volatile registers (including temperature) are accessible.
     if (HUB_ADDR_BASE..HUB_ADDR_BASE + HUB_ADDR_COUNT).contains(&addr) {
-        let _ = dev.write_byte_data(0x0B, 0x00);
+        let _ = dev.write_byte_data(MR11_PAGE_SELECT, 0x00);
     }
 
     // Verify plausible temperature.
