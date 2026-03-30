@@ -9,9 +9,12 @@ use std::path::Path;
 const GPU_HWMON_CHIPS: &[&str] = &["amdgpu", "nouveau", "i915", "xe"];
 
 fn is_gpu_hwmon_chip(chip_name: &str) -> bool {
-    GPU_HWMON_CHIPS
-        .iter()
-        .any(|&gpu| chip_name == gpu || chip_name.starts_with(&format!("{gpu}-")))
+    GPU_HWMON_CHIPS.iter().any(|&gpu| {
+        chip_name == gpu
+            || chip_name
+                .strip_prefix(gpu)
+                .is_some_and(|rest| rest.starts_with('-'))
+    })
 }
 
 /// Prefix a GPU hwmon label with "GPU " if it doesn't already start with "GPU".
@@ -85,19 +88,7 @@ impl HwmonSource {
             })
             .collect();
 
-        let mut effective_overrides = label_overrides.clone();
-        for (_, chip_name, display_name) in &hwmon_entries {
-            if chip_name != display_name {
-                let prefix = format!("hwmon/{chip_name}/");
-                for (key, value) in label_overrides {
-                    if let Some(sensor) = key.strip_prefix(&prefix) {
-                        effective_overrides
-                            .entry(format!("hwmon/{display_name}/{sensor}"))
-                            .or_insert_with(|| value.clone());
-                    }
-                }
-            }
-        }
+        let effective_overrides = expand_label_overrides(label_overrides, &hwmon_entries);
 
         for (hwmon_dir, _, display_name) in &hwmon_entries {
             let mut entries = Vec::new();
@@ -149,7 +140,7 @@ impl HwmonSource {
                 SensorCategory::Current,
                 SensorUnit::Amps,
                 1000.0,
-                label_overrides,
+                &effective_overrides,
                 &mut entries,
             );
 
@@ -186,6 +177,30 @@ impl HwmonSource {
     pub fn sensor_count(&self) -> usize {
         self.chips.iter().map(|c| c.entries.len()).sum()
     }
+}
+
+/// Expand label overrides for disambiguated chip names. Board templates use
+/// unqualified names like `hwmon/jc42/temp1`; when a chip is disambiguated to
+/// `jc42-9-0018`, copy matching overrides so they still apply. Qualified
+/// overrides (if any) take precedence via `or_insert`.
+fn expand_label_overrides(
+    base: &HashMap<String, String>,
+    entries: &[(std::path::PathBuf, String, String)],
+) -> HashMap<String, String> {
+    let mut expanded = base.clone();
+    for (_, chip_name, display_name) in entries {
+        if chip_name != display_name {
+            let prefix = format!("hwmon/{chip_name}/");
+            for (key, value) in base {
+                if let Some(sensor) = key.strip_prefix(&prefix) {
+                    expanded
+                        .entry(format!("hwmon/{display_name}/{sensor}"))
+                        .or_insert_with(|| value.clone());
+                }
+            }
+        }
+    }
+    expanded
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -357,5 +372,63 @@ mod tests {
             gpu_prefix_label("GPU Temperature".into()),
             "GPU Temperature"
         );
+    }
+
+    #[test]
+    fn test_expand_label_overrides_no_duplicates() {
+        let base: HashMap<String, String> = [("hwmon/nct6798/temp1".into(), "SYSTIN".into())]
+            .into_iter()
+            .collect();
+        // Unique chip name — display_name == chip_name, no expansion
+        let entries = vec![(
+            std::path::PathBuf::from("/sys/class/hwmon/hwmon0"),
+            "nct6798".into(),
+            "nct6798".into(),
+        )];
+        let result = expand_label_overrides(&base, &entries);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["hwmon/nct6798/temp1"], "SYSTIN");
+    }
+
+    #[test]
+    fn test_expand_label_overrides_with_duplicates() {
+        let base: HashMap<String, String> = [("hwmon/jc42/temp1".into(), "DIMM Temp".into())]
+            .into_iter()
+            .collect();
+        let entries = vec![
+            (
+                std::path::PathBuf::from("/sys/class/hwmon/hwmon0"),
+                "jc42".into(),
+                "jc42-9-0018".into(),
+            ),
+            (
+                std::path::PathBuf::from("/sys/class/hwmon/hwmon1"),
+                "jc42".into(),
+                "jc42-9-0019".into(),
+            ),
+        ];
+        let result = expand_label_overrides(&base, &entries);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result["hwmon/jc42/temp1"], "DIMM Temp");
+        assert_eq!(result["hwmon/jc42-9-0018/temp1"], "DIMM Temp");
+        assert_eq!(result["hwmon/jc42-9-0019/temp1"], "DIMM Temp");
+    }
+
+    #[test]
+    fn test_expand_label_overrides_qualified_takes_precedence() {
+        let base: HashMap<String, String> = [
+            ("hwmon/jc42/temp1".into(), "DIMM Temp".into()),
+            ("hwmon/jc42-9-0018/temp1".into(), "DIMM A1".into()),
+        ]
+        .into_iter()
+        .collect();
+        let entries = vec![(
+            std::path::PathBuf::from("/sys/class/hwmon/hwmon0"),
+            "jc42".into(),
+            "jc42-9-0018".into(),
+        )];
+        let result = expand_label_overrides(&base, &entries);
+        // Qualified override takes precedence over expanded unqualified
+        assert_eq!(result["hwmon/jc42-9-0018/temp1"], "DIMM A1");
     }
 }
