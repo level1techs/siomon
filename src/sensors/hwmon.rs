@@ -9,7 +9,9 @@ use std::path::Path;
 const GPU_HWMON_CHIPS: &[&str] = &["amdgpu", "nouveau", "i915", "xe"];
 
 fn is_gpu_hwmon_chip(chip_name: &str) -> bool {
-    GPU_HWMON_CHIPS.contains(&chip_name)
+    GPU_HWMON_CHIPS
+        .iter()
+        .any(|&gpu| chip_name == gpu || chip_name.starts_with(&format!("{gpu}-")))
 }
 
 /// Prefix a GPU hwmon label with "GPU " if it doesn't already start with "GPU".
@@ -42,55 +44,107 @@ impl HwmonSource {
     pub fn discover(label_overrides: &HashMap<String, String>) -> Self {
         let mut chips = Vec::new();
 
-        for hwmon_dir in sysfs::glob_paths("/sys/class/hwmon/hwmon*") {
-            let chip_name = sysfs::read_string_optional(&hwmon_dir.join("name"))
-                .unwrap_or_else(|| "unknown".into());
+        // First pass: collect hwmon dirs with their chip names to detect duplicates
+        let hwmon_dirs: Vec<_> = sysfs::glob_paths("/sys/class/hwmon/hwmon*")
+            .into_iter()
+            .map(|dir| {
+                let chip_name = sysfs::read_string_optional(&dir.join("name"))
+                    .unwrap_or_else(|| "unknown".into());
+                (dir, chip_name)
+            })
+            .collect();
 
+        // Count occurrences of each chip name
+        let mut name_counts: HashMap<String, usize> = HashMap::new();
+        for (_, name) in &hwmon_dirs {
+            *name_counts.entry(name.clone()).or_default() += 1;
+        }
+
+        // Compute display names and expand label overrides for disambiguated chips.
+        // Board templates use unqualified names like "hwmon/jc42/temp1"; when a chip
+        // is disambiguated to "jc42-9-0018", we copy matching overrides so they
+        // still apply without changing discover_type/discover_power signatures.
+        let hwmon_entries: Vec<_> = hwmon_dirs
+            .into_iter()
+            .map(|(dir, chip_name)| {
+                let display_name = if name_counts[&chip_name] > 1 {
+                    let suffix = sysfs::read_link_basename(&dir.join("device"))
+                        .or_else(|| {
+                            // Last resort: use hwmon sysfs index (unstable across
+                            // reboots, but avoids collisions within a session)
+                            dir.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| "unknown".into());
+                    format!("{chip_name}-{suffix}")
+                } else {
+                    chip_name.clone()
+                };
+                (dir, chip_name, display_name)
+            })
+            .collect();
+
+        let mut effective_overrides = label_overrides.clone();
+        for (_, chip_name, display_name) in &hwmon_entries {
+            if chip_name != display_name {
+                let prefix = format!("hwmon/{chip_name}/");
+                for (key, value) in label_overrides {
+                    if let Some(sensor) = key.strip_prefix(&prefix) {
+                        effective_overrides
+                            .entry(format!("hwmon/{display_name}/{sensor}"))
+                            .or_insert_with(|| value.clone());
+                    }
+                }
+            }
+        }
+
+        for (hwmon_dir, _, display_name) in &hwmon_entries {
             let mut entries = Vec::new();
 
             // Temperature sensors
             discover_type(
-                &hwmon_dir,
-                &chip_name,
+                hwmon_dir,
+                display_name,
                 "temp",
                 SensorCategory::Temperature,
                 SensorUnit::Celsius,
                 1000.0,
-                label_overrides,
+                &effective_overrides,
                 &mut entries,
             );
 
             // Fan sensors
             discover_type(
-                &hwmon_dir,
-                &chip_name,
+                hwmon_dir,
+                display_name,
                 "fan",
                 SensorCategory::Fan,
                 SensorUnit::Rpm,
                 1.0,
-                label_overrides,
+                &effective_overrides,
                 &mut entries,
             );
 
             // Voltage sensors
             discover_type(
-                &hwmon_dir,
-                &chip_name,
+                hwmon_dir,
+                display_name,
                 "in",
                 SensorCategory::Voltage,
                 SensorUnit::Volts,
                 1000.0,
-                label_overrides,
+                &effective_overrides,
                 &mut entries,
             );
 
             // Power sensors
-            discover_power(&hwmon_dir, &chip_name, label_overrides, &mut entries);
+            discover_power(hwmon_dir, display_name, &effective_overrides, &mut entries);
 
             // Current sensors
             discover_type(
-                &hwmon_dir,
-                &chip_name,
+                hwmon_dir,
+                display_name,
                 "curr",
                 SensorCategory::Current,
                 SensorUnit::Amps,
@@ -285,6 +339,9 @@ mod tests {
         assert!(is_gpu_hwmon_chip("nouveau"));
         assert!(is_gpu_hwmon_chip("i915"));
         assert!(is_gpu_hwmon_chip("xe"));
+        // Disambiguated multi-GPU names must still match
+        assert!(is_gpu_hwmon_chip("amdgpu-0000:41:00.0"));
+        assert!(is_gpu_hwmon_chip("nouveau-0000:01:00.0"));
         assert!(!is_gpu_hwmon_chip("nct6798"));
         assert!(!is_gpu_hwmon_chip("coretemp"));
         assert!(!is_gpu_hwmon_chip("k10temp"));
