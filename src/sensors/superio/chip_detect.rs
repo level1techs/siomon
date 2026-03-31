@@ -27,9 +27,16 @@ pub enum ChipType {
     Nct6797,
     Nct6798,
     Nct6799,
+    Ite8613,
+    Ite8628,
+    Ite8655,
+    Ite8665,
     Ite8686,
     Ite8688,
     Ite8689,
+    Ite8695,
+    Ite8696,
+    Ite8792,
     Unknown,
 }
 
@@ -47,9 +54,16 @@ impl std::fmt::Display for ChipType {
             Self::Nct6797 => write!(f, "NCT6797"),
             Self::Nct6798 => write!(f, "NCT6798"),
             Self::Nct6799 => write!(f, "NCT6799"),
+            Self::Ite8613 => write!(f, "IT8613E"),
+            Self::Ite8628 => write!(f, "IT8628E"),
+            Self::Ite8655 => write!(f, "IT8655E"),
+            Self::Ite8665 => write!(f, "IT8665E"),
             Self::Ite8686 => write!(f, "IT8686E"),
             Self::Ite8688 => write!(f, "IT8688E"),
             Self::Ite8689 => write!(f, "IT8689E"),
+            Self::Ite8695 => write!(f, "IT87952E"),
+            Self::Ite8696 => write!(f, "IT8696E"),
+            Self::Ite8792 => write!(f, "IT8792E"),
             Self::Unknown => write!(f, "Unknown"),
         }
     }
@@ -244,9 +258,18 @@ fn identify_nuvoton(chip_id: u16) -> ChipType {
 
 fn identify_ite(chip_id: u16) -> ChipType {
     match chip_id {
+        0x8613 => ChipType::Ite8613,
+        0x8628 => ChipType::Ite8628,
+        0x8655 => ChipType::Ite8655,
+        0x8665 => ChipType::Ite8665,
         0x8686 => ChipType::Ite8686,
         0x8688 => ChipType::Ite8688,
         0x8689 => ChipType::Ite8689,
+        // IT87952E reports device ID 0x8695
+        0x8695 => ChipType::Ite8695,
+        0x8696 => ChipType::Ite8696,
+        // IT8792E reports device ID 0x8733
+        0x8733 => ChipType::Ite8792,
         _ => {
             // Check high byte only for other ITE chips
             match chip_id >> 8 {
@@ -271,7 +294,16 @@ pub fn is_kernel_driver_loaded(chip: &ChipType) -> bool {
         | ChipType::Nct6797
         | ChipType::Nct6798
         | ChipType::Nct6799 => "nct6775",
-        ChipType::Ite8686 | ChipType::Ite8688 | ChipType::Ite8689 => "it87",
+        ChipType::Ite8613
+        | ChipType::Ite8628
+        | ChipType::Ite8655
+        | ChipType::Ite8665
+        | ChipType::Ite8686
+        | ChipType::Ite8688
+        | ChipType::Ite8689
+        | ChipType::Ite8695
+        | ChipType::Ite8696
+        | ChipType::Ite8792 => "it87",
         ChipType::Unknown => return false,
     };
 
@@ -301,8 +333,16 @@ mod tests {
 
     #[test]
     fn test_identify_ite() {
+        assert_eq!(identify_ite(0x8613), ChipType::Ite8613);
+        assert_eq!(identify_ite(0x8628), ChipType::Ite8628);
+        assert_eq!(identify_ite(0x8655), ChipType::Ite8655);
+        assert_eq!(identify_ite(0x8665), ChipType::Ite8665);
+        assert_eq!(identify_ite(0x8686), ChipType::Ite8686);
         assert_eq!(identify_ite(0x8688), ChipType::Ite8688);
         assert_eq!(identify_ite(0x8689), ChipType::Ite8689);
+        assert_eq!(identify_ite(0x8695), ChipType::Ite8695);
+        assert_eq!(identify_ite(0x8696), ChipType::Ite8696);
+        assert_eq!(identify_ite(0x8733), ChipType::Ite8792);
         assert_eq!(identify_ite(0x0000), ChipType::Unknown);
     }
 
@@ -310,6 +350,9 @@ mod tests {
     fn test_chip_type_display() {
         assert_eq!(format!("{}", ChipType::Nct6798), "NCT6798");
         assert_eq!(format!("{}", ChipType::Ite8688), "IT8688E");
+        assert_eq!(format!("{}", ChipType::Ite8696), "IT8696E");
+        assert_eq!(format!("{}", ChipType::Ite8695), "IT87952E");
+        assert_eq!(format!("{}", ChipType::Ite8792), "IT8792E");
     }
 
     #[test]
