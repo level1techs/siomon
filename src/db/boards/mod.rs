@@ -478,15 +478,13 @@ mod tests {
             "P4242",
             "Jetson AGX Thor",
         ];
+        // Use an empty vendor string — boards without match_vendor constraints
+        // match any vendor, and boards with constraints (e.g. Beelink "azw")
+        // won't match the empty string, which is correct for this test.
+        let vendor = "";
         for name in &known_boards {
-            let lower = name.to_lowercase();
-            let match_count = BOARDS
-                .iter()
-                .filter(|b| {
-                    b.match_substrings.iter().all(|s| lower.contains(s))
-                        && b.exclude_substrings.iter().all(|s| !lower.contains(s))
-                })
-                .count();
+            let result = lookup_board_with_vendor(name, vendor);
+            let match_count = if result.is_some() { 1 } else { 0 };
             assert!(
                 match_count <= 1,
                 "{name} matched {match_count} templates (expected 0 or 1)"

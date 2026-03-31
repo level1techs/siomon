@@ -140,4 +140,29 @@ mod tests {
         assert_eq!(labels.len(), 1);
         assert_eq!(labels.get("hwmon/coretemp/temp1").unwrap(), "CPU Package");
     }
+
+    #[test]
+    fn test_voltage_scaling_from_board() {
+        let scaling = load_voltage_scaling(Some("Pro WS WRX90E-SAGE SE"), &HashMap::new());
+        assert_eq!(*scaling.get("hwmon/nct6798/in1").unwrap(), 5.0);
+        assert_eq!(*scaling.get("hwmon/nct6798/in4").unwrap(), 12.0);
+    }
+
+    #[test]
+    fn test_voltage_scaling_user_override() {
+        let mut user = HashMap::new();
+        user.insert("hwmon/nct6798/in1".into(), 4.8);
+
+        let scaling = load_voltage_scaling(Some("Pro WS WRX90E-SAGE SE"), &user);
+        // User override wins
+        assert_eq!(*scaling.get("hwmon/nct6798/in1").unwrap(), 4.8);
+        // Built-in preserved for other channels
+        assert_eq!(*scaling.get("hwmon/nct6798/in4").unwrap(), 12.0);
+    }
+
+    #[test]
+    fn test_voltage_scaling_unknown_board() {
+        let scaling = load_voltage_scaling(Some("Unknown Board XYZ"), &HashMap::new());
+        assert!(scaling.is_empty());
+    }
 }

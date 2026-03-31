@@ -315,16 +315,17 @@ impl Ite87xxSource {
         let fan16_enable = self.read_reg(pio, REG_FAN_16BIT).unwrap_or(0);
         let num_base = self.num_base_fans();
 
-        // Collect fan register pairs: base fans + optional fan 6
-        let fan6 = self.fan6_regs();
-        let all_fans: Vec<(usize, u8, u8)> = FANX_REGS[..num_base]
+        // Base fans (1-5) + optional fan 6 without heap allocation
+        for (idx, fanx_reg, fan_reg) in FANX_REGS[..num_base]
             .iter()
             .enumerate()
             .map(|(i, &(fx, f))| (i, fx, f))
-            .chain(self.has_fan6().then_some((5, fan6.0, fan6.1)))
-            .collect();
-
-        for (idx, fanx_reg, fan_reg) in all_fans {
+            .chain(
+                self.has_fan6()
+                    .then_some(self.fan6_regs())
+                    .map(|(fx, f)| (5, fx, f)),
+            )
+        {
             if self.skip_fan(idx) {
                 continue;
             }
