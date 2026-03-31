@@ -13,6 +13,9 @@ pub struct SiomonConfig {
     /// Sensor label overrides: "hwmon/nct6798/in0" -> "Vcore"
     #[serde(default)]
     pub sensor_labels: HashMap<String, String>,
+    /// Hwmon voltage scaling multipliers: "hwmon/it8688/in2" -> 6.0
+    #[serde(default)]
+    pub voltage_scaling: HashMap<String, f64>,
     #[serde(default)]
     pub dashboard: DashboardConfig,
 }
@@ -175,6 +178,7 @@ mod tests {
         assert!(cfg.general.storage_exclude.contains(&"zd".to_string()));
         assert!(cfg.general.storage_exclude.contains(&"loop".to_string()));
         assert!(cfg.sensor_labels.is_empty());
+        assert!(cfg.voltage_scaling.is_empty());
     }
 
     #[test]
@@ -183,6 +187,7 @@ mod tests {
         let cfg: SiomonConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.general.format, "text");
         assert!(cfg.sensor_labels.is_empty());
+        assert!(cfg.voltage_scaling.is_empty());
     }
 
     #[test]
@@ -200,6 +205,10 @@ storage_exclude = ["loop", "zd", "custom"]
 [sensor_labels]
 "hwmon/nct6798/in0" = "Vcore"
 "hwmon/nct6798/fan1" = "CPU Fan"
+
+[voltage_scaling]
+"hwmon/it8688/in2" = 6.0
+"hwmon/it8688/in3" = 2.5
 "#;
         let cfg: SiomonConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.general.format, "json");
@@ -214,6 +223,8 @@ storage_exclude = ["loop", "zd", "custom"]
             cfg.sensor_labels.get("hwmon/nct6798/fan1").unwrap(),
             "CPU Fan"
         );
+        assert_eq!(*cfg.voltage_scaling.get("hwmon/it8688/in2").unwrap(), 6.0);
+        assert_eq!(*cfg.voltage_scaling.get("hwmon/it8688/in3").unwrap(), 2.5);
     }
 
     #[test]

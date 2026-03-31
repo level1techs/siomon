@@ -75,10 +75,10 @@ static DEFAULT_NCT6798: [VoltageChannel; 18] = [
 // ---------------------------------------------------------------------------
 pub static ASUS_WRX90E_SAGE: [VoltageChannel; 18] = [
     VoltageChannel::direct("Vcore"), // VIN0: CPU core voltage (~0.8-1.4V)
-    VoltageChannel::new("+5V", 5.0), // VIN1: +5V rail through 4:1 divider
+    VoltageChannel::new("+5V", 5.0), // VIN1: +5V rail through 5:1 divider (Ri=4k, Rf=1k)
     VoltageChannel::direct("AVCC"),  // VIN2: +3.3V (internal 2:1, scale=1600)
     VoltageChannel::direct("+3.3V Standby"), // VIN3: +3.3V standby (scale=1600)
-    VoltageChannel::new("+12V", 12.0), // VIN4: +12V rail through 11:1 divider
+    VoltageChannel::new("+12V", 12.0), // VIN4: +12V rail through 12:1 divider (Ri=11k, Rf=1k)
     VoltageChannel::direct("VIN5"),  // VIN5: unknown rail (~1V)
     VoltageChannel::direct("VIN6"),  // VIN6: unknown rail (~0.6V)
     VoltageChannel::direct("+3.3V AUX"), // VIN7: +3.3V auxiliary (scale=1600)

@@ -35,6 +35,7 @@ pub struct Poller {
     no_nvidia: bool,
     direct_io: bool,
     label_overrides: HashMap<String, String>,
+    voltage_scaling: HashMap<String, f64>,
     storage_exclude: Vec<String>,
     platform: Platform,
     board: Option<&'static BoardTemplate>,
@@ -49,6 +50,7 @@ impl Poller {
         no_nvidia: bool,
         direct_io: bool,
         label_overrides: HashMap<String, String>,
+        voltage_scaling: HashMap<String, f64>,
         storage_exclude: Vec<String>,
         platform: Platform,
         board: Option<&'static BoardTemplate>,
@@ -60,6 +62,7 @@ impl Poller {
             no_nvidia,
             direct_io,
             label_overrides,
+            voltage_scaling,
             storage_exclude,
             platform,
             board,
@@ -86,6 +89,7 @@ impl Poller {
             self.no_nvidia,
             self.direct_io,
             &self.label_overrides,
+            &self.voltage_scaling,
             &self.storage_exclude,
             self.platform,
             self.board,
@@ -188,6 +192,7 @@ fn discover_all_sources(
     no_nvidia: bool,
     direct_io: bool,
     label_overrides: &HashMap<String, String>,
+    voltage_scaling: &HashMap<String, f64>,
     storage_exclude: &[String],
     platform: Platform,
     board: Option<&'static BoardTemplate>,
@@ -221,7 +226,7 @@ fn discover_all_sources(
 
         // Moderate: hwmon sysfs enumeration
         let h_hwmon = s.spawn(|| -> Box<dyn SensorSource> {
-            let src = hwmon::HwmonSource::discover(label_overrides);
+            let src = hwmon::HwmonSource::discover(label_overrides, voltage_scaling);
             log::info!(
                 "hwmon: {} chips, {} sensors",
                 src.chip_count(),
@@ -334,6 +339,7 @@ pub fn snapshot(
     no_nvidia: bool,
     direct_io: bool,
     label_overrides: &HashMap<String, String>,
+    voltage_scaling: &HashMap<String, f64>,
     storage_exclude: &[String],
     platform: Platform,
     board: Option<&'static BoardTemplate>,
@@ -342,6 +348,7 @@ pub fn snapshot(
         no_nvidia,
         direct_io,
         label_overrides,
+        voltage_scaling,
         storage_exclude,
         platform,
         board,

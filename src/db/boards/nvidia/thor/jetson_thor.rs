@@ -1,9 +1,9 @@
-use crate::db::boards::{BoardTemplate, FeatureRequirements, Platform};
+use crate::db::boards::{BoardTemplate, FeatureRequirements, HwmonConfig, Platform};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
-    match_substrings: &["jetson"],
+    match_substrings: &["jetson", "thor"],
     exclude_substrings: &[],
-    match_any: &["thor"],
+    match_vendor: &[],
     description: "NVIDIA Jetson AGX Thor (Tegra, Neoverse V3AE + Blackwell GPU)",
     platform: Platform::Tegra,
 
@@ -24,4 +24,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     dimm_labels: &[],
     ddr5_bus_config: None,
     requirements: FeatureRequirements::NONE,
+    hwmon: HwmonConfig {
+        voltage_scaling: &[],
+    },
 };

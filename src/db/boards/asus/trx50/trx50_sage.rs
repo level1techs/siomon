@@ -1,9 +1,9 @@
-use crate::db::boards::{BoardTemplate, Ddr5BusConfig, FeatureRequirements, Platform};
+use crate::db::boards::{BoardTemplate, Ddr5BusConfig, FeatureRequirements, HwmonConfig, Platform};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["pro ws", "trx50", "sage"],
     exclude_substrings: &[],
-    match_any: &[],
+    match_vendor: &[],
     description: "ASUS Pro WS TRX50-SAGE WIFI A (AMD TRX50)",
     platform: Platform::Generic,
 
@@ -20,4 +20,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
         slots_per_bus: 4,
     }),
     requirements: FeatureRequirements::NONE,
+    hwmon: HwmonConfig {
+        voltage_scaling: &[],
+    },
 };

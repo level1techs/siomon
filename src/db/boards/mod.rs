@@ -14,6 +14,7 @@
 
 mod asrock;
 mod asus;
+mod azw;
 mod gigabyte;
 mod nvidia;
 
@@ -96,9 +97,9 @@ pub struct BoardTemplate {
     pub match_substrings: &'static [&'static str],
     /// Substrings that must NOT be present. Store as lowercase.
     pub exclude_substrings: &'static [&'static str],
-    /// At least one of these must match (OR logic for chipset variants).
-    /// Empty means no additional constraint. Store as lowercase.
-    pub match_any: &'static [&'static str],
+    /// Substrings that ALL must be present in the DMI board_vendor.
+    /// Empty means no vendor constraint. Store as lowercase.
+    pub match_vendor: &'static [&'static str],
     /// Human-readable board description for logging.
     pub description: &'static str,
     /// Platform hint for enabling platform-specific sensor sources.
@@ -118,6 +119,17 @@ pub struct BoardTemplate {
     pub ddr5_bus_config: Option<&'static Ddr5BusConfig>,
     /// Per-feature prerequisites (BIOS version, settings, etc.).
     pub requirements: FeatureRequirements,
+    /// Hwmon-specific configuration (voltage scaling, etc.).
+    pub hwmon: HwmonConfig,
+}
+
+/// Hwmon-specific board configuration.
+#[derive(Debug)]
+pub struct HwmonConfig {
+    /// Voltage multipliers for external resistor dividers.
+    /// Sensor key (e.g. "hwmon/it8688/in2") → multiplier. Applied after the
+    /// kernel's internal ADC scaling to recover actual rail voltages.
+    pub voltage_scaling: &'static [(&'static str, f64)],
 }
 
 /// Maps an EDAC rank to a physical DIMM slot.
@@ -127,6 +139,88 @@ pub struct DimmSlotLabel {
     pub rank: u16,
     pub label: &'static str,
 }
+
+/// Hwmon voltage scaling for Gigabyte boards with IT8688 (X570/TRX40).
+pub const GIGABYTE_IT8688_SCALING: &[(&str, f64)] = &[
+    ("hwmon/it8688/in1", 1.65), // +3.3V: 33/20 divider
+    ("hwmon/it8688/in2", 6.0),  // +12V: 120/20 divider
+    ("hwmon/it8688/in3", 2.5),  // +5V: 50/20 divider
+];
+
+/// Common sensor labels for the primary IT8688 chip on Gigabyte X570/B550/TRX40 boards.
+pub const GIGABYTE_IT8688_LABELS: &[(&str, &str)] = &[
+    ("hwmon/it8688/in0", "Vcore"),
+    ("hwmon/it8688/in1", "+3.3V"),
+    ("hwmon/it8688/in2", "+12V"),
+    ("hwmon/it8688/in3", "+5V"),
+    ("hwmon/it8688/in4", "Vcore SoC"),
+    ("hwmon/it8688/in5", "CPU VDDP"),
+    ("hwmon/it8688/in6", "DRAM"),
+    ("hwmon/it8688/in7", "+3.3V Standby"),
+    ("hwmon/it8688/in8", "Vbat"),
+    ("hwmon/it8688/fan1", "CPU Fan"),
+    ("hwmon/it8688/fan2", "SYS Fan 1"),
+    ("hwmon/it8688/fan3", "SYS Fan 2"),
+    ("hwmon/it8688/fan4", "PCH Fan"),
+    ("hwmon/it8688/fan5", "CPU OPT"),
+    ("hwmon/it8688/temp1", "System"),
+    ("hwmon/it8688/temp3", "CPU"),
+    ("hwmon/it8688/temp4", "PCIe x16"),
+    ("hwmon/it8688/temp5", "VRM MOS"),
+    ("hwmon/it8688/temp6", "PCH"),
+];
+
+/// Common sensor labels for the secondary IT8792 chip on Gigabyte dual-chip boards.
+pub const GIGABYTE_IT8792_LABELS: &[(&str, &str)] = &[
+    ("hwmon/it8792/in1", "DDR VTT"),
+    ("hwmon/it8792/in2", "Chipset Core"),
+    ("hwmon/it8792/in4", "CPU VDD 1.8V"),
+    ("hwmon/it8792/in5", "PM CLDO12"),
+    ("hwmon/it8792/fan1", "SYS Fan 5 Pump"),
+    ("hwmon/it8792/fan2", "SYS Fan 6 Pump"),
+    ("hwmon/it8792/fan3", "SYS Fan 4"),
+    ("hwmon/it8792/temp1", "PCIe x8"),
+    ("hwmon/it8792/temp3", "System 2"),
+];
+
+/// Hwmon voltage scaling for Gigabyte X870/X870E boards with IT8696.
+pub const GIGABYTE_X870_IT8696_SCALING: &[(&str, f64)] = &[
+    ("hwmon/it8696/in1", 1.649), // +3.3V: (6.49/10)+1 divider
+    ("hwmon/it8696/in2", 6.0),   // +12V: (50/10)+1 divider
+    ("hwmon/it8696/in3", 2.5),   // +5V: (15/10)+1 divider
+];
+
+/// Common sensor labels shared across Gigabyte X870/X870E boards with IT8696.
+pub const GIGABYTE_X870_IT8696_LABELS: &[(&str, &str)] = &[
+    ("hwmon/it8696/in0", "Vcore"),
+    ("hwmon/it8696/in1", "+3.3V"),
+    ("hwmon/it8696/in2", "+12V"),
+    ("hwmon/it8696/in3", "+5V"),
+    ("hwmon/it8696/in4", "Vcore SoC"),
+    ("hwmon/it8696/in5", "Vcore Misc"),
+    ("hwmon/it8696/in6", "VDDIO Memory"),
+    ("hwmon/it8696/in7", "+3.3V Standby"),
+    ("hwmon/it8696/in8", "Vbat"),
+    ("hwmon/it8696/fan1", "CPU Fan"),
+    ("hwmon/it8696/fan5", "CPU OPT"),
+    ("hwmon/it8696/temp1", "System"),
+    ("hwmon/it8696/temp2", "PCH"),
+    ("hwmon/it8696/temp3", "CPU"),
+    ("hwmon/it8696/temp4", "PCIe x16"),
+    ("hwmon/it8696/temp5", "VRM MOS"),
+];
+
+/// Hwmon voltage scaling for ASUS boards with NCT6798D (+5V on VIN1, +12V on VIN4).
+pub const ASUS_NCT6798_HWMON_SCALING: &[(&str, f64)] = &[
+    ("hwmon/nct6798/in1", 5.0),  // +5V rail
+    ("hwmon/nct6798/in4", 12.0), // +12V rail
+];
+
+/// Hwmon voltage scaling for boards with NCT6799D (+5V on VIN1, +12V on VIN4).
+pub const NCT6799_HWMON_SCALING: &[(&str, f64)] = &[
+    ("hwmon/nct6799/in1", 5.0),  // +5V rail
+    ("hwmon/nct6799/in4", 12.0), // +12V rail
+];
 
 /// Common sensor labels shared across ASUS AM5 boards with NCT6798D.
 pub const ASUS_AM5_NCT6798_LABELS: &[(&str, &str)] = &[
@@ -151,24 +245,65 @@ static BOARDS: &[&BoardTemplate] = &[
     // TRX50
     &asus::trx50::trx50_sage::BOARD,
     &gigabyte::trx50::trx50_ai_top::BOARD,
-    // AM5
+    // TRX40
+    &gigabyte::trx40::trx40_xtreme::BOARD,
+    // Gigabyte AM5 (X870I must come before X870 — more specific match)
+    &gigabyte::x870::x870i_pro::BOARD,
+    &gigabyte::x870::x870e_master::BOARD,
+    &gigabyte::x870::x870_eagle::BOARD,
+    &gigabyte::x870::x870_gaming::BOARD,
+    &gigabyte::b650::b650m_d3hp::BOARD,
+    // Gigabyte AM4
+    &gigabyte::x570::x570_pro::BOARD,
+    &gigabyte::x570::x570_elite::BOARD,
+    &gigabyte::b550::b550_vision_d::BOARD,
+    &gigabyte::b550::b550m_ds3h::BOARD,
+    &gigabyte::b450::b450_elite::BOARD,
+    &gigabyte::b450::b450m_ds3h::BOARD,
+    // Gigabyte Intel
+    &gigabyte::z690::z690_pro::BOARD,
+    // ASUS AM5
     &asus::x670e::crosshair_x670e::BOARD,
-    &asus::x670e::strix_x670e::BOARD,
-    &asus::x670e::tuf_x670e::BOARD,
-    &asus::x670e::prime_x670e::BOARD,
+    &asus::x670e::strix_x670e::BOARD_X670,
+    &asus::x670e::strix_x670e::BOARD_B650,
+    &asus::x670e::tuf_x670e::BOARD_X670,
+    &asus::x670e::tuf_x670e::BOARD_B650,
+    &asus::x670e::prime_x670e::BOARD_X670,
+    &asus::x670e::prime_x670e::BOARD_B650,
     &asus::x670e::proart_x670e::BOARD,
+    // ASUS AM4
+    &asus::b350::prime_b350::BOARD,
+    &asus::b450::prime_b450::BOARD,
+    // Mini-PCs
+    &azw::mini_pc::beelink_eq::BOARD,
+    &azw::mini_pc::beelink_sei::BOARD,
     // NVIDIA
     &nvidia::gb10::dgx_spark::BOARD,
     &nvidia::thor::jetson_thor::BOARD,
 ];
 
-/// Look up a board template by DMI board name.
+/// Look up a board template by DMI board name and vendor.
 pub fn lookup_board(board_name: &str) -> Option<&'static BoardTemplate> {
+    let vendor = read_board_vendor().unwrap_or_default();
+    lookup_board_with_vendor(board_name, &vendor)
+}
+
+fn read_board_vendor() -> Option<String> {
+    crate::platform::sysfs::read_string_optional(std::path::Path::new(
+        "/sys/class/dmi/id/board_vendor",
+    ))
+}
+
+fn lookup_board_with_vendor(
+    board_name: &str,
+    board_vendor: &str,
+) -> Option<&'static BoardTemplate> {
     let lower = board_name.to_lowercase();
+    let vendor_lower = board_vendor.to_lowercase();
     BOARDS.iter().copied().find(|b| {
         b.match_substrings.iter().all(|s| lower.contains(s))
             && b.exclude_substrings.iter().all(|s| !lower.contains(s))
-            && (b.match_any.is_empty() || b.match_any.iter().any(|s| lower.contains(s)))
+            && b.match_vendor.iter().all(|s| vendor_lower.contains(s))
     })
 }
 
@@ -185,6 +320,16 @@ pub fn resolve_labels(board: &BoardTemplate) -> HashMap<String, String> {
         m.insert(key.into(), val.into());
     }
     m
+}
+
+/// Resolve hwmon voltage scaling for a board template into a HashMap.
+pub fn resolve_voltage_scaling(board: &BoardTemplate) -> HashMap<String, f64> {
+    board
+        .hwmon
+        .voltage_scaling
+        .iter()
+        .map(|&(key, val)| (key.into(), val))
+        .collect()
 }
 
 #[cfg(test)]
@@ -340,7 +485,6 @@ mod tests {
                 .filter(|b| {
                     b.match_substrings.iter().all(|s| lower.contains(s))
                         && b.exclude_substrings.iter().all(|s| !lower.contains(s))
-                        && (b.match_any.is_empty() || b.match_any.iter().any(|s| lower.contains(s)))
                 })
                 .count();
             assert!(
@@ -355,7 +499,7 @@ mod tests {
         let board = BoardTemplate {
             match_substrings: &["test"],
             exclude_substrings: &[],
-            match_any: &[],
+            match_vendor: &[],
             description: "test board",
             platform: Platform::Generic,
             base_labels: Some(&[
@@ -367,6 +511,9 @@ mod tests {
             dimm_labels: &[],
             ddr5_bus_config: None,
             requirements: FeatureRequirements::NONE,
+            hwmon: HwmonConfig {
+                voltage_scaling: &[],
+            },
         };
         let labels = resolve_labels(&board);
         // Board override wins
@@ -380,7 +527,7 @@ mod tests {
         let board = BoardTemplate {
             match_substrings: &["test"],
             exclude_substrings: &[],
-            match_any: &[],
+            match_vendor: &[],
             description: "test board",
             platform: Platform::Generic,
             base_labels: None,
@@ -389,6 +536,9 @@ mod tests {
             dimm_labels: &[],
             ddr5_bus_config: None,
             requirements: FeatureRequirements::NONE,
+            hwmon: HwmonConfig {
+                voltage_scaling: &[],
+            },
         };
         let labels = resolve_labels(&board);
         assert_eq!(labels.len(), 1);

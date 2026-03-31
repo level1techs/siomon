@@ -1,9 +1,12 @@
-use crate::db::boards::{ASUS_AM5_NCT6798_LABELS, BoardTemplate, FeatureRequirements, Platform};
+use crate::db::boards::{
+    ASUS_AM5_NCT6798_LABELS, ASUS_NCT6798_HWMON_SCALING, BoardTemplate, FeatureRequirements,
+    HwmonConfig, Platform,
+};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["proart", "x670"],
     exclude_substrings: &[],
-    match_any: &[],
+    match_vendor: &[],
     description: "ASUS ProArt X670E-CREATOR (AMD AM5, NCT6798D)",
     platform: Platform::Generic,
 
@@ -18,4 +21,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     dimm_labels: &[],
     ddr5_bus_config: None,
     requirements: FeatureRequirements::NONE,
+    hwmon: HwmonConfig {
+        voltage_scaling: ASUS_NCT6798_HWMON_SCALING,
+    },
 };

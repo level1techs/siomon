@@ -32,6 +32,25 @@ pub fn load_labels(
     (labels, platform)
 }
 
+/// Load hwmon voltage scaling multipliers. Checks:
+/// 1. Built-in board-specific scaling (matched by board name from DMI)
+/// 2. User overrides from config file (these take precedence)
+pub fn load_voltage_scaling(
+    board_name: Option<&str>,
+    user_scaling: &HashMap<String, f64>,
+) -> HashMap<String, f64> {
+    let mut scaling = HashMap::new();
+
+    if let Some(board) = board_name.and_then(super::boards::lookup_board) {
+        scaling = super::boards::resolve_voltage_scaling(board);
+    }
+
+    // User scaling overrides built-ins
+    scaling.extend(user_scaling.iter().map(|(k, &v)| (k.clone(), v)));
+
+    scaling
+}
+
 /// Read the board name from DMI sysfs.
 pub fn read_board_name() -> Option<String> {
     crate::platform::sysfs::read_string_optional(std::path::Path::new(

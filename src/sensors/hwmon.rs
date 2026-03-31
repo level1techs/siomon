@@ -41,10 +41,16 @@ struct SensorEntry {
     category: SensorCategory,
     unit: SensorUnit,
     divisor: f64,
+    /// External voltage scaling multiplier (default 1.0). Applied after
+    /// dividing by `divisor` to correct for board-level resistor dividers.
+    multiplier: f64,
 }
 
 impl HwmonSource {
-    pub fn discover(label_overrides: &HashMap<String, String>) -> Self {
+    pub fn discover(
+        label_overrides: &HashMap<String, String>,
+        voltage_scaling: &HashMap<String, f64>,
+    ) -> Self {
         let mut chips = Vec::new();
 
         // First pass: collect hwmon dirs with their chip names to detect duplicates
@@ -88,7 +94,8 @@ impl HwmonSource {
             })
             .collect();
 
-        let effective_overrides = expand_label_overrides(label_overrides, &hwmon_entries);
+        let effective_overrides = expand_overrides(label_overrides, &hwmon_entries);
+        let effective_scaling = expand_overrides(voltage_scaling, &hwmon_entries);
 
         for (hwmon_dir, _, display_name) in &hwmon_entries {
             let mut entries = Vec::new();
@@ -144,6 +151,15 @@ impl HwmonSource {
                 &mut entries,
             );
 
+            // Apply voltage scaling multipliers from board template
+            for entry in &mut entries {
+                if entry.category == SensorCategory::Voltage {
+                    if let Some(&mult) = effective_scaling.get(&entry.id.to_string()) {
+                        entry.multiplier = mult;
+                    }
+                }
+            }
+
             if !entries.is_empty() {
                 chips.push(ChipSensors { entries });
             }
@@ -158,8 +174,7 @@ impl HwmonSource {
         for chip in &mut self.chips {
             for entry in &mut chip.entries {
                 if let Some(raw) = entry.input_file.read_u64() {
-                    // Some sensors report 0 when disconnected/absent
-                    let value = raw as f64 / entry.divisor;
+                    let value = raw as f64 / entry.divisor * entry.multiplier;
                     let reading =
                         SensorReading::new(entry.label.clone(), value, entry.unit, entry.category);
                     readings.push((entry.id.clone(), reading));
@@ -179,14 +194,14 @@ impl HwmonSource {
     }
 }
 
-/// Expand label overrides for disambiguated chip names. Board templates use
-/// unqualified names like `hwmon/jc42/temp1`; when a chip is disambiguated to
-/// `jc42-9-0018`, copy matching overrides so they still apply. Qualified
-/// overrides (if any) take precedence via `or_insert`.
-fn expand_label_overrides(
-    base: &HashMap<String, String>,
+/// Expand a sensor key → value map for disambiguated chip names. Board
+/// templates use unqualified names like `hwmon/jc42/temp1`; when a chip is
+/// disambiguated to `jc42-9-0018`, copy matching entries so they still apply.
+/// Qualified entries (if any) take precedence via `or_insert`.
+fn expand_overrides<V: Clone>(
+    base: &HashMap<String, V>,
     entries: &[(std::path::PathBuf, String, String)],
-) -> HashMap<String, String> {
+) -> HashMap<String, V> {
     let mut expanded = base.clone();
     for (_, chip_name, display_name) in entries {
         if chip_name != display_name {
@@ -262,6 +277,7 @@ fn discover_type(
             category,
             unit,
             divisor,
+            multiplier: 1.0,
         });
     }
 }
@@ -339,6 +355,7 @@ fn discover_power(
                 category: SensorCategory::Power,
                 unit: SensorUnit::Watts,
                 divisor: 1_000_000.0,
+                multiplier: 1.0,
             });
         }
     }
@@ -375,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_label_overrides_no_duplicates() {
+    fn test_expand_overrides_no_duplicates() {
         let base: HashMap<String, String> = [("hwmon/nct6798/temp1".into(), "SYSTIN".into())]
             .into_iter()
             .collect();
@@ -385,13 +402,13 @@ mod tests {
             "nct6798".into(),
             "nct6798".into(),
         )];
-        let result = expand_label_overrides(&base, &entries);
+        let result = expand_overrides(&base, &entries);
         assert_eq!(result.len(), 1);
         assert_eq!(result["hwmon/nct6798/temp1"], "SYSTIN");
     }
 
     #[test]
-    fn test_expand_label_overrides_with_duplicates() {
+    fn test_expand_overrides_with_duplicates() {
         let base: HashMap<String, String> = [("hwmon/jc42/temp1".into(), "DIMM Temp".into())]
             .into_iter()
             .collect();
@@ -407,7 +424,7 @@ mod tests {
                 "jc42-9-0019".into(),
             ),
         ];
-        let result = expand_label_overrides(&base, &entries);
+        let result = expand_overrides(&base, &entries);
         assert_eq!(result.len(), 3);
         assert_eq!(result["hwmon/jc42/temp1"], "DIMM Temp");
         assert_eq!(result["hwmon/jc42-9-0018/temp1"], "DIMM Temp");
@@ -415,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_label_overrides_qualified_takes_precedence() {
+    fn test_expand_overrides_qualified_takes_precedence() {
         let base: HashMap<String, String> = [
             ("hwmon/jc42/temp1".into(), "DIMM Temp".into()),
             ("hwmon/jc42-9-0018/temp1".into(), "DIMM A1".into()),
@@ -427,7 +444,7 @@ mod tests {
             "jc42".into(),
             "jc42-9-0018".into(),
         )];
-        let result = expand_label_overrides(&base, &entries);
+        let result = expand_overrides(&base, &entries);
         // Qualified override takes precedence over expanded unqualified
         assert_eq!(result["hwmon/jc42-9-0018/temp1"], "DIMM A1");
     }

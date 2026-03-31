@@ -1,11 +1,12 @@
 use crate::db::boards::{
-    BoardTemplate, Ddr5BusConfig, FEAT_DDR5, FeatureRequirements, Platform, Requirement,
+    BoardTemplate, Ddr5BusConfig, FEAT_DDR5, FeatureRequirements, HwmonConfig,
+    NCT6799_HWMON_SCALING, Platform, Requirement,
 };
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["wrx90"],
     exclude_substrings: &["wrx90e"],
-    match_any: &[],
+    match_vendor: &[],
     description: "ASRock WRX90 WS EVO (AMD TRX50, NCT6799D)",
     platform: Platform::Generic,
 
@@ -58,5 +59,8 @@ pub static BOARD: BoardTemplate = BoardTemplate {
                 description: "Enable I2C/SPD passthrough in BIOS Advanced settings",
             }],
         )],
+    },
+    hwmon: HwmonConfig {
+        voltage_scaling: NCT6799_HWMON_SCALING,
     },
 };

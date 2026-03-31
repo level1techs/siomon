@@ -21,6 +21,8 @@ fn main() {
     let board = board_name.as_deref().and_then(db::boards::lookup_board);
     let (label_overrides, platform) =
         db::sensor_labels::load_labels(board_name.as_deref(), &config.sensor_labels);
+    let voltage_scaling =
+        db::sensor_labels::load_voltage_scaling(board_name.as_deref(), &config.voltage_scaling);
 
     // Default to TUI when running interactively with no subcommand
     #[cfg(feature = "tui")]
@@ -34,13 +36,27 @@ fn main() {
 
     // TUI monitor mode
     if cli.tui {
-        run_monitor(&cli, &config, label_overrides, platform, board);
+        run_monitor(
+            &cli,
+            &config,
+            label_overrides,
+            voltage_scaling,
+            platform,
+            board,
+        );
         return;
     }
 
     // Sensor snapshot or one-shot commands
     if let Some(Commands::Sensors) = &cli.command {
-        run_sensor_snapshot(&cli, &config, &label_overrides, platform, board);
+        run_sensor_snapshot(
+            &cli,
+            &config,
+            &label_overrides,
+            &voltage_scaling,
+            platform,
+            board,
+        );
         return;
     }
 
@@ -92,6 +108,7 @@ fn run_monitor(
     cli: &Cli,
     config: &config::SiomonConfig,
     label_overrides: std::collections::HashMap<String, String>,
+    voltage_scaling: std::collections::HashMap<String, f64>,
     platform: db::boards::Platform,
     board: Option<&'static db::boards::BoardTemplate>,
 ) {
@@ -107,6 +124,7 @@ fn run_monitor(
             cli.no_nvidia,
             cli.direct_io,
             label_overrides,
+            voltage_scaling,
             config.general.storage_exclude.clone(),
             platform,
             board,
@@ -160,7 +178,14 @@ fn run_monitor(
 
     #[cfg(not(feature = "tui"))]
     {
-        let _ = (cli, config, label_overrides, platform, board);
+        let _ = (
+            cli,
+            config,
+            label_overrides,
+            voltage_scaling,
+            platform,
+            board,
+        );
         eprintln!("TUI not available — compile with the 'tui' feature");
     }
 }
@@ -169,6 +194,7 @@ fn run_sensor_snapshot(
     cli: &Cli,
     config: &config::SiomonConfig,
     label_overrides: &std::collections::HashMap<String, String>,
+    voltage_scaling: &std::collections::HashMap<String, f64>,
     platform: db::boards::Platform,
     board: Option<&'static db::boards::BoardTemplate>,
 ) {
@@ -176,6 +202,7 @@ fn run_sensor_snapshot(
         cli.no_nvidia,
         cli.direct_io,
         label_overrides,
+        voltage_scaling,
         &config.general.storage_exclude,
         platform,
         board,

@@ -1,13 +1,13 @@
 use crate::db::boards::{
-    BoardTemplate, Ddr5BusConfig, DimmSlotLabel, FEAT_DDR5, FeatureRequirements, Platform,
-    Requirement,
+    ASUS_NCT6798_HWMON_SCALING, BoardTemplate, Ddr5BusConfig, DimmSlotLabel, FEAT_DDR5,
+    FeatureRequirements, HwmonConfig, Platform, Requirement,
 };
 use crate::db::voltage_scaling;
 
 pub static BOARD: BoardTemplate = BoardTemplate {
     match_substrings: &["wrx90e"],
     exclude_substrings: &[],
-    match_any: &[],
+    match_vendor: &[],
     description: "ASUS Pro WS WRX90E-SAGE SE (AMD TRX50, NCT6798D)",
     platform: Platform::Generic,
 
@@ -15,10 +15,10 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     base_labels: None,
     sensor_labels: &[
         ("hwmon/nct6798/in0", "Vcore"),
-        ("hwmon/nct6798/in1", "VIN1"),
+        ("hwmon/nct6798/in1", "+5V"),
         ("hwmon/nct6798/in2", "+3.3V"),
         ("hwmon/nct6798/in3", "+3.3V Standby"),
-        ("hwmon/nct6798/in4", "VIN4"),
+        ("hwmon/nct6798/in4", "+12V"),
         ("hwmon/nct6798/in5", "VIN5"),
         ("hwmon/nct6798/in6", "VIN6"),
         ("hwmon/nct6798/in7", "+3.3V AUX"),
@@ -136,5 +136,8 @@ pub static BOARD: BoardTemplate = BoardTemplate {
                 hint: "Update ASUS WRX90E BIOS to >= 1317 to expose DDR5 I2C SPD addresses.",
             }],
         )],
+    },
+    hwmon: HwmonConfig {
+        voltage_scaling: ASUS_NCT6798_HWMON_SCALING,
     },
 };
