@@ -1,7 +1,7 @@
 use crate::db::boards::{BoardTemplate, FeatureRequirements, HwmonConfig, Platform};
 
 pub static BOARD: BoardTemplate = BoardTemplate {
-    match_substrings: &["tuf", "x570"],
+    match_substrings: &["tuf", "x570", "plus"],
     exclude_substrings: &[],
     match_vendor: &[],
     description: "ASUS TUF GAMING X570-PLUS (AMD AM4, NCT6798D)",

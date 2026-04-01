@@ -170,14 +170,16 @@ pub const GIGABYTE_IT8686_LABELS: &[(&str, &str)] = &[
     ("hwmon/it8686/temp6", "Vcore SoC MOS"),
 ];
 
-/// Hwmon voltage scaling for Gigabyte Intel boards with IT8728.
+/// Default hwmon voltage scaling for Gigabyte IT8728 boards (Z77-D3H baseline).
+/// Boards with different divider networks (e.g. B75-D3V) override inline.
 pub const GIGABYTE_IT8728_SCALING: &[(&str, f64)] = &[
     ("hwmon/it8728/in1", 1.649), // +3.3V
     ("hwmon/it8728/in2", 6.0),   // +12V: 72/12
     ("hwmon/it8728/in3", 2.5),   // +5V
 ];
 
-/// Common sensor labels for Gigabyte Intel boards with IT8728.
+/// Default sensor labels for Gigabyte IT8728 boards. Boards may override
+/// individual entries (e.g. B75-D3V relabels temp3 as "Chipset").
 pub const GIGABYTE_IT8728_LABELS: &[(&str, &str)] = &[
     ("hwmon/it8728/in0", "Vtt"),
     ("hwmon/it8728/in1", "+3.3V"),
@@ -292,7 +294,8 @@ pub const ASUS_AM5_NCT6798_LABELS: &[(&str, &str)] = &[
     ("hwmon/nct6798/fan1", "CPU Fan"),
 ];
 
-/// Hwmon voltage scaling for MSI AM4 boards with NCT6795 (+5V on VIN1, +12V on VIN4).
+/// Default hwmon voltage scaling for MSI AM4 NCT6795 boards (B350/X470 baseline).
+/// Boards with different VIN mappings (e.g. X370 SLI Plus) define scaling inline.
 pub const MSI_AM4_NCT6795_HWMON_SCALING: &[(&str, f64)] = &[
     ("hwmon/nct6795/in1", 5.0),   // +5V: (12/3)+1
     ("hwmon/nct6795/in4", 12.0),  // +12V: (220/20)+1
@@ -301,7 +304,8 @@ pub const MSI_AM4_NCT6795_HWMON_SCALING: &[(&str, f64)] = &[
     ("hwmon/nct6795/in14", 3.33), // 5VSB: (768/330)+1
 ];
 
-/// Common sensor labels shared across MSI AM4 boards with NCT6795.
+/// Default sensor labels for MSI AM4 NCT6795 boards. Boards with different
+/// VIN mappings (e.g. X370 SLI Plus) define labels inline instead.
 pub const MSI_AM4_NCT6795_LABELS: &[(&str, &str)] = &[
     ("hwmon/nct6795/in0", "Vcore"),
     ("hwmon/nct6795/in1", "+5V"),
@@ -719,7 +723,7 @@ mod tests {
         assert!(b.description.contains("F2A88"));
     }
 
-    // --- Phase 5 boards ---
+    // --- ASUS Intel (older) + Gigabyte legacy boards ---
 
     #[test]
     fn test_lookup_asus_p8p67_pro() {
@@ -786,7 +790,6 @@ mod tests {
             "TRX50 AI TOP",
             "P4242",
             "Jetson AGX Thor",
-            // New boards
             "MS-7A34",
             "MS-7B79",
             "MS-7B89",
@@ -802,7 +805,6 @@ mod tests {
             "Z77-D3H",
             "H170M-D3H-CF",
             "F2A88XM-HD3",
-            // Phase 5 boards
             "P8P67 PRO",
             "P8Z68-V LX",
             "P8B75-V",
@@ -816,8 +818,16 @@ mod tests {
         // won't match the empty string, which is correct for this test.
         let vendor = "";
         for name in &known_boards {
-            let result = lookup_board_with_vendor(name, vendor);
-            let match_count = if result.is_some() { 1 } else { 0 };
+            let lower = name.to_lowercase();
+            let vendor_lower = vendor.to_lowercase();
+            let match_count = BOARDS
+                .iter()
+                .filter(|b| {
+                    b.match_substrings.iter().all(|s| lower.contains(s))
+                        && b.exclude_substrings.iter().all(|s| !lower.contains(s))
+                        && b.match_vendor.iter().all(|s| vendor_lower.contains(s))
+                })
+                .count();
             assert!(
                 match_count <= 1,
                 "{name} matched {match_count} templates (expected 0 or 1)"
