@@ -1,5 +1,13 @@
 pub mod b350;
 pub mod b450;
+pub mod b75;
+pub mod c236;
+pub mod h87;
+pub mod p67;
+pub mod q1900;
 pub mod trx50;
 pub mod wrx90;
+pub mod x570;
 pub mod x670e;
+pub mod z370;
+pub mod z68;

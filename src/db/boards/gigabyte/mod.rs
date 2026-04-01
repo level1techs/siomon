@@ -1,8 +1,15 @@
+pub mod am3;
+pub mod am4_300;
 pub mod b450;
 pub mod b550;
 pub mod b650;
+pub mod b75;
+pub mod fm2;
+pub mod h170;
+pub mod h67;
 pub mod trx40;
 pub mod trx50;
 pub mod x570;
 pub mod x870;
 pub mod z690;
+pub mod z77;

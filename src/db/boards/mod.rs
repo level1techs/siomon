@@ -16,6 +16,7 @@ mod asrock;
 mod asus;
 mod azw;
 mod gigabyte;
+mod msi;
 mod nvidia;
 
 use std::collections::HashMap;
@@ -140,6 +141,60 @@ pub struct DimmSlotLabel {
     pub label: &'static str,
 }
 
+/// Hwmon voltage scaling for Gigabyte boards with IT8686 (AM4 300/400-series).
+pub const GIGABYTE_IT8686_SCALING: &[(&str, f64)] = &[
+    ("hwmon/it8686/in1", 1.65), // +3.3V: 33/20 divider
+    ("hwmon/it8686/in2", 6.0),  // +12V: 120/20 divider
+    ("hwmon/it8686/in3", 2.5),  // +5V: 50/20 divider
+];
+
+/// Common sensor labels for the primary IT8686 chip on Gigabyte AM4 300/400-series boards.
+pub const GIGABYTE_IT8686_LABELS: &[(&str, &str)] = &[
+    ("hwmon/it8686/in0", "Vcore"),
+    ("hwmon/it8686/in1", "+3.3V"),
+    ("hwmon/it8686/in2", "+12V"),
+    ("hwmon/it8686/in3", "+5V"),
+    ("hwmon/it8686/in4", "Vcore SoC"),
+    ("hwmon/it8686/in5", "CPU VDDP"),
+    ("hwmon/it8686/in6", "DRAM"),
+    ("hwmon/it8686/in7", "+3.3V Standby"),
+    ("hwmon/it8686/in8", "Vbat"),
+    ("hwmon/it8686/fan1", "CPU Fan"),
+    ("hwmon/it8686/fan2", "SYS Fan 1"),
+    ("hwmon/it8686/fan3", "SYS Fan 2"),
+    ("hwmon/it8686/temp1", "System"),
+    ("hwmon/it8686/temp2", "Chipset"),
+    ("hwmon/it8686/temp3", "CPU"),
+    ("hwmon/it8686/temp4", "PCIe x16"),
+    ("hwmon/it8686/temp5", "VRM MOS"),
+    ("hwmon/it8686/temp6", "Vcore SoC MOS"),
+];
+
+/// Hwmon voltage scaling for Gigabyte Intel boards with IT8728.
+pub const GIGABYTE_IT8728_SCALING: &[(&str, f64)] = &[
+    ("hwmon/it8728/in1", 1.649), // +3.3V
+    ("hwmon/it8728/in2", 6.0),   // +12V: 72/12
+    ("hwmon/it8728/in3", 2.5),   // +5V
+];
+
+/// Common sensor labels for Gigabyte Intel boards with IT8728.
+pub const GIGABYTE_IT8728_LABELS: &[(&str, &str)] = &[
+    ("hwmon/it8728/in0", "Vtt"),
+    ("hwmon/it8728/in1", "+3.3V"),
+    ("hwmon/it8728/in2", "+12V"),
+    ("hwmon/it8728/in3", "+5V"),
+    ("hwmon/it8728/in4", "Vaxg"),
+    ("hwmon/it8728/in5", "Vcore"),
+    ("hwmon/it8728/in6", "DRAM"),
+    ("hwmon/it8728/in7", "+3.3V Standby"),
+    ("hwmon/it8728/in8", "Vbat"),
+    ("hwmon/it8728/fan1", "CPU Fan"),
+    ("hwmon/it8728/fan2", "SYS Fan 1"),
+    ("hwmon/it8728/fan3", "SYS Fan 2"),
+    ("hwmon/it8728/temp1", "System"),
+    ("hwmon/it8728/temp3", "CPU"),
+];
+
 /// Hwmon voltage scaling for Gigabyte boards with IT8688 (X570/TRX40).
 pub const GIGABYTE_IT8688_SCALING: &[(&str, f64)] = &[
     ("hwmon/it8688/in1", 1.65), // +3.3V: 33/20 divider
@@ -237,6 +292,28 @@ pub const ASUS_AM5_NCT6798_LABELS: &[(&str, &str)] = &[
     ("hwmon/nct6798/fan1", "CPU Fan"),
 ];
 
+/// Hwmon voltage scaling for MSI AM4 boards with NCT6795 (+5V on VIN1, +12V on VIN4).
+pub const MSI_AM4_NCT6795_HWMON_SCALING: &[(&str, f64)] = &[
+    ("hwmon/nct6795/in1", 5.0),   // +5V: (12/3)+1
+    ("hwmon/nct6795/in4", 12.0),  // +12V: (220/20)+1
+    ("hwmon/nct6795/in12", 2.0),  // NB/SOC: x2
+    ("hwmon/nct6795/in13", 2.0),  // DRAM: x2
+    ("hwmon/nct6795/in14", 3.33), // 5VSB: (768/330)+1
+];
+
+/// Common sensor labels shared across MSI AM4 boards with NCT6795.
+pub const MSI_AM4_NCT6795_LABELS: &[(&str, &str)] = &[
+    ("hwmon/nct6795/in0", "Vcore"),
+    ("hwmon/nct6795/in1", "+5V"),
+    ("hwmon/nct6795/in2", "AVCC"),
+    ("hwmon/nct6795/in3", "+3.3V"),
+    ("hwmon/nct6795/in4", "+12V"),
+    ("hwmon/nct6795/in7", "+3.3V Standby"),
+    ("hwmon/nct6795/in8", "Vbat"),
+    ("hwmon/nct6795/temp1", "Super I/O"),
+    ("hwmon/nct6795/temp2", "SoC VRM"),
+];
+
 /// All known board templates. First match wins.
 static BOARDS: &[&BoardTemplate] = &[
     // ASUS WRX90E must come before ASRock WRX90 (excludes WRX90E)
@@ -253,15 +330,26 @@ static BOARDS: &[&BoardTemplate] = &[
     &gigabyte::x870::x870_eagle::BOARD,
     &gigabyte::x870::x870_gaming::BOARD,
     &gigabyte::b650::b650m_d3hp::BOARD,
-    // Gigabyte AM4
+    // Gigabyte AM4 (AB350N-Gaming WIFI must come before AB350-Gaming 3)
     &gigabyte::x570::x570_pro::BOARD,
     &gigabyte::x570::x570_elite::BOARD,
     &gigabyte::b550::b550_vision_d::BOARD,
     &gigabyte::b550::b550m_ds3h::BOARD,
+    &gigabyte::am4_300::x470_ultra_gaming::BOARD,
+    &gigabyte::am4_300::ax370_gaming5::BOARD,
+    &gigabyte::am4_300::ab350n_gaming_wifi::BOARD,
+    &gigabyte::am4_300::ab350_gaming3::BOARD,
+    &gigabyte::am4_300::ax370m_ds3h::BOARD,
     &gigabyte::b450::b450_elite::BOARD,
     &gigabyte::b450::b450m_ds3h::BOARD,
     // Gigabyte Intel
     &gigabyte::z690::z690_pro::BOARD,
+    &gigabyte::z77::z77_d3h::BOARD,
+    &gigabyte::h170::h170m_d3h::BOARD,
+    &gigabyte::fm2::f2a88xm_hd3::BOARD,
+    &gigabyte::b75::b75_d3v::BOARD,
+    &gigabyte::h67::h67ma_ud2h::BOARD,
+    &gigabyte::am3::ga_870a_ud3::BOARD,
     // ASUS AM5
     &asus::x670e::crosshair_x670e::BOARD,
     &asus::x670e::strix_x670e::BOARD_X670,
@@ -272,8 +360,31 @@ static BOARDS: &[&BoardTemplate] = &[
     &asus::x670e::prime_x670e::BOARD_B650,
     &asus::x670e::proart_x670e::BOARD,
     // ASUS AM4
+    &asus::x570::tuf_x570_plus::BOARD,
     &asus::b350::prime_b350::BOARD,
     &asus::b450::prime_b450::BOARD,
+    // ASUS Intel
+    &asus::z370::prime_z370a::BOARD,
+    &asus::h87::h87_pro::BOARD,
+    &asus::c236::p10s_m_ws::BOARD,
+    &asus::p67::p8p67_pro::BOARD,
+    &asus::z68::p8z68v_lx::BOARD,
+    &asus::b75::p8b75v::BOARD,
+    &asus::q1900::q1900_itx::BOARD,
+    // MSI AM4
+    &msi::am4::b350_tomahawk::BOARD,
+    &msi::am4::x370_sli_plus::BOARD,
+    &msi::am4::x470_gaming_pro::BOARD,
+    &msi::am4::b450m_mortar::BOARD,
+    // ASRock AM4
+    &asrock::am4::ab350_pro4::BOARD,
+    &asrock::am4::x370_taichi::BOARD,
+    &asrock::am4::x370_gaming_k4::BOARD,
+    &asrock::am4::b450_gaming_itx::BOARD,
+    &asrock::am4::a300m_deskmini::BOARD,
+    // ASRock Intel
+    &asrock::z390::z390_extreme4::BOARD,
+    &asrock::z390::z390m_itx::BOARD,
     // Mini-PCs
     &azw::mini_pc::beelink_eq::BOARD,
     &azw::mini_pc::beelink_sei::BOARD,
@@ -460,6 +571,204 @@ mod tests {
         assert_eq!(b.platform, Platform::Tegra);
     }
 
+    // --- MSI boards ---
+
+    #[test]
+    fn test_lookup_msi_b350_tomahawk() {
+        let b = lookup_board("MS-7A34").unwrap();
+        assert!(b.description.contains("MSI"));
+        assert!(b.description.contains("B350"));
+    }
+
+    #[test]
+    fn test_lookup_msi_x470_gaming_pro() {
+        let b = lookup_board("MS-7B79").unwrap();
+        assert!(b.description.contains("X470"));
+    }
+
+    #[test]
+    fn test_lookup_msi_b450m_mortar() {
+        let b = lookup_board("MS-7B89").unwrap();
+        assert!(b.description.contains("B450M MORTAR"));
+    }
+
+    #[test]
+    fn test_lookup_msi_x370_sli_plus() {
+        let b = lookup_board_with_vendor("X370 SLI PLUS", "Micro-Star International Co., Ltd.")
+            .unwrap();
+        assert!(b.description.contains("X370 SLI"));
+    }
+
+    // --- ASRock boards ---
+
+    #[test]
+    fn test_lookup_asrock_ab350_pro4() {
+        let b = lookup_board_with_vendor("AB350 Pro4", "ASRock").unwrap();
+        assert!(b.description.contains("AB350"));
+    }
+
+    #[test]
+    fn test_lookup_asrock_x370_taichi() {
+        let b = lookup_board_with_vendor("X370 Taichi", "ASRock").unwrap();
+        assert!(b.description.contains("X370 Taichi"));
+    }
+
+    #[test]
+    fn test_lookup_asrock_b450_gaming_itx() {
+        let b = lookup_board_with_vendor("B450 Gaming-ITX/ac", "ASRock").unwrap();
+        assert!(b.description.contains("B450 Gaming-ITX"));
+    }
+
+    #[test]
+    fn test_lookup_asrock_a300m_deskmini() {
+        let b = lookup_board_with_vendor("A300M-STX", "ASRock").unwrap();
+        assert!(b.description.contains("DeskMini"));
+    }
+
+    #[test]
+    fn test_lookup_asrock_z390_extreme4() {
+        let b = lookup_board_with_vendor("Z390 Extreme4", "ASRock").unwrap();
+        assert!(b.description.contains("Z390 Extreme4"));
+    }
+
+    #[test]
+    fn test_lookup_asrock_z390m_itx() {
+        let b = lookup_board_with_vendor("Z390M-ITX/ac", "ASRock").unwrap();
+        assert!(b.description.contains("Z390M-ITX"));
+    }
+
+    // --- ASUS Intel/X570 boards ---
+
+    #[test]
+    fn test_lookup_asus_tuf_x570() {
+        let b = lookup_board("TUF GAMING X570-PLUS").unwrap();
+        assert!(b.description.contains("X570"));
+    }
+
+    #[test]
+    fn test_lookup_asus_tuf_x570_wifi() {
+        let b = lookup_board("TUF GAMING X570-PLUS (WI-FI)").unwrap();
+        assert!(b.description.contains("X570"));
+    }
+
+    #[test]
+    fn test_lookup_asus_prime_z370a() {
+        let b = lookup_board("PRIME Z370-A").unwrap();
+        assert!(b.description.contains("Z370"));
+    }
+
+    #[test]
+    fn test_lookup_asus_h87_pro() {
+        let b = lookup_board("H87-PRO").unwrap();
+        assert!(b.description.contains("H87"));
+    }
+
+    #[test]
+    fn test_lookup_asus_p10s_m_ws() {
+        let b = lookup_board("P10S-M WS").unwrap();
+        assert!(b.description.contains("P10S"));
+    }
+
+    // --- Gigabyte 300-series + older ITE boards ---
+
+    #[test]
+    fn test_lookup_gigabyte_ax370_gaming5() {
+        let b = lookup_board("AX370-Gaming 5").unwrap();
+        assert!(b.description.contains("AX370"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_ab350_gaming3() {
+        let b = lookup_board("AB350-Gaming 3").unwrap();
+        assert!(b.description.contains("AB350"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_ab350n_gaming_wifi() {
+        let b = lookup_board("AB350N-Gaming WIFI-CF").unwrap();
+        assert!(b.description.contains("AB350N"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_ax370m_ds3h() {
+        let b = lookup_board("AX370M-DS3H").unwrap();
+        assert!(b.description.contains("AX370M"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_x470_ultra_gaming() {
+        let b = lookup_board("X470 AORUS ULTRA GAMING").unwrap();
+        assert!(b.description.contains("X470"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_z77_d3h() {
+        let b = lookup_board("Z77-D3H").unwrap();
+        assert!(b.description.contains("Z77"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_h170m_d3h() {
+        let b = lookup_board("H170M-D3H-CF").unwrap();
+        assert!(b.description.contains("H170"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_f2a88xm_hd3() {
+        let b = lookup_board("F2A88XM-HD3").unwrap();
+        assert!(b.description.contains("F2A88"));
+    }
+
+    // --- Phase 5 boards ---
+
+    #[test]
+    fn test_lookup_asus_p8p67_pro() {
+        let b = lookup_board("P8P67 PRO").unwrap();
+        assert!(b.description.contains("P8P67"));
+    }
+
+    #[test]
+    fn test_lookup_asus_p8z68v_lx() {
+        let b = lookup_board("P8Z68-V LX").unwrap();
+        assert!(b.description.contains("P8Z68"));
+    }
+
+    #[test]
+    fn test_lookup_asus_p8b75v() {
+        let b = lookup_board("P8B75-V").unwrap();
+        assert!(b.description.contains("P8B75"));
+    }
+
+    #[test]
+    fn test_lookup_asus_q1900_itx() {
+        let b = lookup_board("Q1900-ITX").unwrap();
+        assert!(b.description.contains("Q1900"));
+    }
+
+    #[test]
+    fn test_lookup_asrock_x370_gaming_k4() {
+        let b = lookup_board_with_vendor("X370 Gaming K4", "ASRock").unwrap();
+        assert!(b.description.contains("Gaming K4"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_b75_d3v() {
+        let b = lookup_board("B75-D3V").unwrap();
+        assert!(b.description.contains("B75"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_h67ma_ud2h() {
+        let b = lookup_board("H67MA-UD2H").unwrap();
+        assert!(b.description.contains("H67"));
+    }
+
+    #[test]
+    fn test_lookup_gigabyte_870a_ud3() {
+        let b = lookup_board("GA-870A-UD3").unwrap();
+        assert!(b.description.contains("870A"));
+    }
+
     #[test]
     fn test_no_ambiguous_matches() {
         let known_boards = [
@@ -477,6 +786,30 @@ mod tests {
             "TRX50 AI TOP",
             "P4242",
             "Jetson AGX Thor",
+            // New boards
+            "MS-7A34",
+            "MS-7B79",
+            "MS-7B89",
+            "TUF GAMING X570-PLUS",
+            "PRIME Z370-A",
+            "H87-PRO",
+            "P10S-M WS",
+            "AX370-Gaming 5",
+            "AB350-Gaming 3",
+            "AB350N-Gaming WIFI-CF",
+            "AX370M-DS3H",
+            "X470 AORUS ULTRA GAMING",
+            "Z77-D3H",
+            "H170M-D3H-CF",
+            "F2A88XM-HD3",
+            // Phase 5 boards
+            "P8P67 PRO",
+            "P8Z68-V LX",
+            "P8B75-V",
+            "Q1900-ITX",
+            "B75-D3V",
+            "H67MA-UD2H",
+            "GA-870A-UD3",
         ];
         // Use an empty vendor string — boards without match_vendor constraints
         // match any vendor, and boards with constraints (e.g. Beelink "azw")
