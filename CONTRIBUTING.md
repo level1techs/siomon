@@ -38,27 +38,27 @@ File issues at [github.com/level1techs/siomon/issues](https://github.com/level1t
 
 sio reads directly from Linux kernel interfaces -- no lm-sensors or other userspace daemons required.
 
-| Data | Source |
-|------|--------|
-| CPU identification | CPUID instruction (`raw-cpuid` crate) |
-| CPU topology | `/sys/devices/system/cpu/cpu*/topology/` |
-| CPU frequency | `/sys/devices/system/cpu/cpu*/cpufreq/` |
-| CPU utilization | `/proc/stat` |
-| CPU vulnerabilities | `/sys/devices/system/cpu/vulnerabilities/` |
-| Memory | `/proc/meminfo` + SMBIOS Type 17 |
-| Motherboard/BIOS | `/sys/class/dmi/id/` |
-| Chipset | PCI host bridge at `0000:00:00.0` |
-| UEFI/Secure Boot | `/sys/firmware/efi/` |
-| GPU (NVIDIA) | NVML via `dlopen("libnvidia-ml.so.1")` |
-| GPU (AMD) | `/sys/class/drm/card*/device/` + hwmon |
-| GPU (Intel) | `/sys/class/drm/card*/` + hwmon |
-| Storage | `/sys/class/block/` + `/sys/class/nvme/` |
-| Network | `/sys/class/net/` + `getifaddrs()` |
-| PCI devices | `/sys/bus/pci/devices/` + `pci.ids` (embedded) |
-| Sensors (hwmon) | `/sys/class/hwmon/hwmon*/` |
-| Power (RAPL) | `/sys/class/powercap/intel-rapl:*/` |
-| Disk throughput | `/proc/diskstats` |
-| Network throughput | `/sys/class/net/*/statistics/` |
+| Data                | Source                                         |
+| ------------------- | ---------------------------------------------- |
+| CPU identification  | CPUID instruction (`raw-cpuid` crate)          |
+| CPU topology        | `/sys/devices/system/cpu/cpu*/topology/`       |
+| CPU frequency       | `/sys/devices/system/cpu/cpu*/cpufreq/`        |
+| CPU utilization     | `/proc/stat`                                   |
+| CPU vulnerabilities | `/sys/devices/system/cpu/vulnerabilities/`     |
+| Memory              | `/proc/meminfo` + SMBIOS Type 17               |
+| Motherboard/BIOS    | `/sys/class/dmi/id/`                           |
+| Chipset             | PCI host bridge at `0000:00:00.0`              |
+| UEFI/Secure Boot    | `/sys/firmware/efi/`                           |
+| GPU (NVIDIA)        | NVML via `dlopen("libnvidia-ml.so.1")`         |
+| GPU (AMD)           | `/sys/class/drm/card*/device/` + hwmon         |
+| GPU (Intel)         | `/sys/class/drm/card*/` + hwmon                |
+| Storage             | `/sys/class/block/` + `/sys/class/nvme/`       |
+| Network             | `/sys/class/net/` + `getifaddrs()`             |
+| PCI devices         | `/sys/bus/pci/devices/` + `pci.ids` (embedded) |
+| Sensors (hwmon)     | `/sys/class/hwmon/hwmon*/`                     |
+| Power (RAPL)        | `/sys/class/powercap/intel-rapl:*/`            |
+| Disk throughput     | `/proc/diskstats`                              |
+| Network throughput  | `/sys/class/net/*/statistics/`                 |
 
 ## Project Structure
 
@@ -134,20 +134,21 @@ src/
 
 ## Dependencies
 
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| `raw-cpuid` | 11 | x86 CPUID instruction parsing |
-| `serde` + `serde_json` | 1 | Serialization for JSON output |
-| `toml` | 0.8 | Config file parsing |
-| `clap` | 4 | CLI argument parsing |
-| `ratatui` + `crossterm` | 0.29 / 0.28 | Terminal UI (optional: `tui` feature) |
-| `quick-xml` | 0.37 | XML output (optional: `xml` feature) |
-| `csv` | 1 | CSV sensor logging (optional: `csv` feature) |
-| `pci-ids` | 0.2 | PCI vendor/device name database (compiled in) |
-| `libloading` | 0.8 | dlopen for NVML (optional: `nvidia` feature) |
-| `nix` | 0.29 | Unix syscall wrappers |
-| `libc` | 0.2 | C FFI types (getifaddrs) |
-| `chrono` | 0.4 | Timestamps |
-| `thiserror` | 2 | Error derive macros |
-| `glob` | 0.3 | Sysfs path enumeration |
-| `log` + `env_logger` | 0.4 / 0.11 | Debug logging (`RUST_LOG=debug`) |
+| Crate                   | Version     | Purpose                                       |
+| ----------------------- | ----------- | --------------------------------------------- |
+| `raw-cpuid`             | 11          | x86 CPUID instruction parsing                 |
+| `serde` + `serde_json`  | 1           | Serialization for JSON output                 |
+| `toml`                  | 0.8         | Config file parsing                           |
+| `clap`                  | 4           | CLI argument parsing                          |
+| `clap_complete`         | 4           | Shell completions                             |
+| `ratatui` + `crossterm` | 0.29 / 0.28 | Terminal UI (optional: `tui` feature)         |
+| `quick-xml`             | 0.37        | XML output (optional: `xml` feature)          |
+| `csv`                   | 1           | CSV sensor logging (optional: `csv` feature)  |
+| `pci-ids`               | 0.2         | PCI vendor/device name database (compiled in) |
+| `libloading`            | 0.8         | dlopen for NVML (optional: `nvidia` feature)  |
+| `nix`                   | 0.29        | Unix syscall wrappers                         |
+| `libc`                  | 0.2         | C FFI types (getifaddrs)                      |
+| `chrono`                | 0.4         | Timestamps                                    |
+| `thiserror`             | 2           | Error derive macros                           |
+| `glob`                  | 0.3         | Sysfs path enumeration                        |
+| `log` + `env_logger`    | 0.4 / 0.11  | Debug logging (`RUST_LOG=debug`)              |

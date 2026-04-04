@@ -1,0 +1,9 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+siomon = { path = ".." }
+clap.workspace = true
+clap_complete.workspace = true

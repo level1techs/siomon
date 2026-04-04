@@ -27,6 +27,14 @@ csv = ["dep:csv"]
 [target.'cfg(any(target_arch = "x86_64", target_arch = "x86"))'.dependencies]
 raw-cpuid = "11"
 
+[workspace]
+members = [".", "xtask"]
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive", "env", "string"] }
+clap_complete = "4"
+
+
 [dependencies]
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -44,7 +52,7 @@ ratatui = { version = "0.29", optional = true }
 crossterm = { version = "0.28", optional = true }
 
 # CLI
-clap = { version = "4", features = ["derive", "env", "string"] }
+clap.workspace = true
 
 # Unix / Linux syscalls
 nix = { version = "0.29", features = ["fs", "ioctl", "mman", "process"] }
