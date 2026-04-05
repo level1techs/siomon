@@ -1,12 +1,14 @@
-use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io::{self, Stdout};
 
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
+use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, LineGauge, Paragraph};
+use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, LineGauge, Paragraph};
 
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading};
 
@@ -17,6 +19,7 @@ struct LayoutParams {
     max_entries: usize,
     spark_width: usize,
     available_rows: u16,
+    chart_max_points: usize,
 }
 
 /// Generous max entries based on available rows. Panels that don't need this
@@ -35,20 +38,16 @@ fn compute_layout(width: u16, height: u16, panel_count: usize) -> LayoutParams {
         1
     };
 
-    let spark_width = if width < 80 {
-        0
-    } else if width < 120 {
-        10
-    } else if width < 200 {
-        15
-    } else {
-        20
-    };
+    let col_width = width / (num_columns as u16).max(1);
+
+    // Sparkline width fills remaining column width after label + value overhead.
+    // borders(2) + label(20) + space(1) + value(8) + space(1) + trailing(3) = 35 chars
+    let spark_width = col_width.saturating_sub(35) as usize;
 
     let available_rows = height.saturating_sub(4); // header(3) + status(1)
 
     let panels_per_col = panel_count.max(1).div_ceil(num_columns as usize) as u16;
-    let rows_per_panel = available_rows / panels_per_col;
+    let rows_per_panel = available_rows / panels_per_col.max(1);
 
     let max_entries = (rows_per_panel.saturating_sub(2) as usize).clamp(2, 50);
 
@@ -57,6 +56,7 @@ fn compute_layout(width: u16, height: u16, panel_count: usize) -> LayoutParams {
         max_entries,
         spark_width,
         available_rows,
+        chart_max_points: 0, // set by caller
     }
 }
 
@@ -73,7 +73,7 @@ fn panel_priority(title: &str) -> u8 {
         "Network" => 6,
         "GPU" => 7,
         "Thermal" => 8,
-        "CPU" => 9,
+        "CPU" | "CPU Analyzer" | "CCD Analyzer" => 9,
         _ => 5,
     }
 }
@@ -87,6 +87,7 @@ pub fn render(
     sensor_count: usize,
     theme: &TuiTheme,
     dashboard_config: &crate::config::DashboardConfig,
+    poll_interval_ms: u64,
     sys: &SystemSummary,
 ) -> io::Result<()> {
     terminal.draw(|frame| {
@@ -96,16 +97,22 @@ pub fn render(
         } else {
             dashboard_config.panels.len()
         };
-        let layout = compute_layout(size.width, size.height, estimated_panels);
+        let mut layout = compute_layout(size.width, size.height, estimated_panels);
+        layout.chart_max_points = if poll_interval_ms > 0 {
+            ((dashboard_config.chart_history_secs * 1000) / poll_interval_ms) as usize
+        } else {
+            300
+        };
 
         // Outer layout: header + main + status
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Min(1),
+                Constraint::Fill(1),
                 Constraint::Length(1),
             ])
+            .flex(Flex::Start)
             .split(size);
 
         // Header with system summary
@@ -194,16 +201,188 @@ struct Panel<'a> {
     truncated: bool,
 }
 
+/// A single time-series dataset for a Chart panel.
+struct ChartSeries {
+    name: String,
+    color: Color,
+    data: Vec<(f64, f64)>,
+}
+
+/// Colors cycled through for chart datasets to differentiate lines.
+/// Chart line colors ordered for maximum contrast between consecutive entries:
+/// alternates hue and lightness so adjacent datasets are always visually distinct.
+const CHART_COLORS: &[Color] = &[
+    Color::Cyan,
+    Color::LightRed,
+    Color::Green,
+    Color::Magenta,
+    Color::Yellow,
+    Color::Blue,
+    Color::LightGreen,
+    Color::Red,
+    Color::LightCyan,
+    Color::LightMagenta,
+    Color::LightYellow,
+    Color::LightBlue,
+];
+
+// ---------------------------------------------------------------------------
+// CPU Analyzer — histogram heatmap data structures
+// ---------------------------------------------------------------------------
+
+/// Bucket sensor history values into a time-distribution histogram.
+///
+/// Returns `num_buckets` normalized fractions (0.0–1.0) representing the
+/// fraction of samples that fell into each bucket. Bucket boundaries span
+/// `[min, max]` evenly.
+fn compute_histogram(samples: &[f64], num_buckets: usize, min: f64, max: f64) -> Vec<f64> {
+    if num_buckets == 0 {
+        return Vec::new();
+    }
+    let mut bins = vec![0u32; num_buckets];
+    let range = (max - min).max(f64::EPSILON);
+    for &v in samples {
+        if !v.is_finite() {
+            continue;
+        }
+        let idx = (((v - min) / range) * (num_buckets - 1) as f64).round() as usize;
+        bins[idx.min(num_buckets - 1)] += 1;
+    }
+    let total = samples.len().max(1) as f64;
+    bins.iter().map(|&c| c as f64 / total).collect()
+}
+
+/// Map a time-distribution fraction to a TrueColor gradient.
+///
+/// Adapted from CPU-Heatmap's `heatColor()`:
+/// - 0.0 → near-black (no time spent)
+/// - 0.0–0.5 → green → yellow
+/// - 0.5–1.0 → yellow → orange-red
+fn heat_color(fraction: f64) -> Color {
+    if fraction < 0.001 {
+        return Color::Rgb(20, 20, 30);
+    }
+    let t = fraction.clamp(0.0, 1.0);
+    let (r, g, b) = if t < 0.5 {
+        let u = t / 0.5;
+        ((u * 255.0) as u8, (180.0 - u * 15.0) as u8, 0u8)
+    } else {
+        let u = (t - 0.5) / 0.5;
+        ((255.0 - u * 35.0) as u8, (165.0 - u * 145.0) as u8, 0u8)
+    };
+    Color::Rgb(r, g, b)
+}
+
+/// Blue gradient for frequency histogram bins.
+/// Near-black → deep blue → bright cyan-blue.
+fn freq_heat_color(fraction: f64) -> Color {
+    if fraction < 0.001 {
+        return Color::Rgb(10, 12, 30);
+    }
+    let t = fraction.clamp(0.0, 1.0);
+    let r = (20.0 + t * 60.0) as u8;
+    let g = (30.0 + t * 150.0) as u8;
+    let b = (80.0 + t * 175.0) as u8;
+    Color::Rgb(r, g, b)
+}
+
+/// Extract the last `max_points` finite samples from a sensor history buffer.
+fn history_samples(buf: &VecDeque<f64>, max_points: usize) -> Vec<f64> {
+    let start = buf.len().saturating_sub(max_points);
+    buf.iter()
+        .skip(start)
+        .copied()
+        .filter(|v| v.is_finite())
+        .collect()
+}
+
+/// A single histogram group (e.g. all core frequencies, or all core loads).
+struct HistogramData {
+    /// (row_label, bins) — bins are normalized fractions 0.0–1.0.
+    rows: Vec<(String, Vec<f64>)>,
+    /// Global max bin value across all rows (for color normalization).
+    global_max: f64,
+    /// Axis labels for bucket boundaries.
+    axis_labels: Vec<String>,
+    /// Background color for zero-valued cells in this section.
+    bg_color: Color,
+}
+
+/// A single thread's load histogram within a core group.
+struct ThreadRow {
+    label: String,  // "Th1", "Th2", or "" for CCD mode
+    bins: Vec<f64>, // normalized histogram bins
+    avg_load: f64,  // weighted average load 0–100
+}
+
+/// A physical core group: 1 freq row + N thread load rows.
+struct CoreGroup {
+    label: String,           // "C0", "C1", "CCD0", etc.
+    freq_bins: Vec<f64>,     // frequency histogram bins
+    threads: Vec<ThreadRow>, // 1 per SMT thread (or 1 for CCD)
+}
+
+impl CoreGroup {
+    /// Total display rows: 1 freq + N threads.
+    fn row_count(&self) -> usize {
+        1 + self.threads.len()
+    }
+}
+
+/// Pre-computed data for the full CPU Analyzer composite panel.
+struct CpuAnalyzerData {
+    /// Physical core groups in display order.
+    groups: Vec<CoreGroup>,
+    /// Frequency histogram global max (for color normalization).
+    freq_global_max: f64,
+    /// Load histogram global max.
+    load_global_max: f64,
+    /// Frequency axis labels.
+    freq_axis_labels: Vec<String>,
+    /// Load axis labels.
+    load_axis_labels: Vec<String>,
+    /// Frequency histogram background color.
+    freq_bg: Color,
+    /// Load histogram background color.
+    load_bg: Color,
+    /// Package power histogram (Watts bins) — None if no RAPL/HSMP.
+    power_histogram: Option<HistogramData>,
+    /// L3 cache hit rate histogram — None if no perf sensor.
+    l3_histogram: Option<HistogramData>,
+    /// DDR bandwidth histogram (Gbps bins) — None if no HSMP/resctrl.
+    ddr_histogram: Option<HistogramData>,
+}
+
+/// Generate evenly-spaced axis labels for a range.
+fn axis_labels(min: f64, max: f64, count: usize, unit: &str, precision: usize) -> Vec<String> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let step = (max - min) / (count.max(1) - 1) as f64;
+    (0..count)
+        .map(|i| {
+            let v = min + step * i as f64;
+            if precision == 0 {
+                format!("{:.0}{}", v, unit)
+            } else {
+                format!("{:.prec$}{}", v, unit, prec = precision)
+            }
+        })
+        .collect()
+}
+
 enum PanelContent<'a> {
     /// Standard text lines (current behavior for most panels).
     Lines(Vec<Line<'a>>),
     /// Mixed content: text lines interleaved with gauge widgets.
     Mixed(Vec<PanelRow<'a>>),
-    /// Multi-column layout: rows distributed across N columns.
-    MultiCol {
-        rows: Vec<PanelRow<'a>>,
-        columns: u8,
+    /// Time-series chart with multiple colored line datasets.
+    TimeChart {
+        series: Vec<ChartSeries>,
+        y_unit: String,
     },
+    /// Full CPU Analyzer composite panel with histogram heatmaps.
+    CpuAnalyzer(Box<CpuAnalyzerData>),
 }
 
 enum PanelRow<'a> {
@@ -222,18 +401,29 @@ impl<'a> PanelContent<'a> {
         match self {
             PanelContent::Lines(lines) => lines.len() as u16,
             PanelContent::Mixed(rows) => rows.len() as u16,
-            PanelContent::MultiCol { rows, columns } => {
-                let cols = (*columns).max(1) as usize;
-                rows.len().div_ceil(cols) as u16
+            PanelContent::TimeChart { .. } => {
+                // Charts grow to fill; minimum 5 rows for legibility
+                5
+            }
+            PanelContent::CpuAnalyzer(data) => {
+                // Sum of all core group rows + 2 axis rows + 1 legend
+                let core_rows: u16 = data.groups.iter().map(|g| g.row_count() as u16).sum();
+                core_rows + 3
             }
         }
+    }
+
+    /// Whether this panel benefits from extra vertical space.
+    /// TimeCharts and standalone Heatmaps grow; CpuAnalyzer and text do not.
+    fn is_growable(&self) -> bool {
+        matches!(self, PanelContent::TimeChart { .. })
     }
 
     #[cfg(test)]
     fn lines(&self) -> &[Line<'a>] {
         match self {
             PanelContent::Lines(lines) => lines,
-            PanelContent::Mixed(_) | PanelContent::MultiCol { .. } => &[],
+            _ => &[],
         }
     }
 }
@@ -263,10 +453,11 @@ fn render_wide(
         .constraints([Constraint::Min(1), Constraint::Length(errors_height)])
         .split(area);
 
-    // Two columns
+    // Two columns — Fill(1) + SpaceBetween for true equal-width distribution
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Fill(1), Constraint::Fill(1)])
+        .flex(Flex::SpaceBetween)
         .split(main_split[0]);
 
     let left: Vec<&Panel<'_>> = normal
@@ -310,14 +501,15 @@ fn render_three_col(
         .constraints([Constraint::Min(1), Constraint::Length(errors_height)])
         .split(area);
 
-    // Three columns: 33% / 34% / 33%
+    // Three columns — Fill(1) + SpaceBetween for true equal-width distribution
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
+            Constraint::Fill(1),
+            Constraint::Fill(1),
+            Constraint::Fill(1),
         ])
+        .flex(Flex::SpaceBetween)
         .split(main_split[0]);
 
     let left: Vec<&Panel<'_>> = normal.iter().filter(|p| p.column == Column::Left).collect();
@@ -361,16 +553,21 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
         return;
     }
 
-    // Truncated panels (have more data to show) expand to fill remaining space.
-    // Non-truncated panels get tight sizing. This ensures panels with more
-    // data (e.g., many thermal sensors) grow into space freed by smaller panels.
+    // Sizing strategy:
+    // - Truncated panels get Fill(1) — expand to fill remaining space.
+    // - Growable panels (TimeCharts, Heatmaps) get Fill(h) — grow proportionally.
+    // - Fixed panels (CpuAnalyzer, Lines, Mixed) get Length(h) — exact size, no stretch.
+    // This ensures the CPU Analyzer never steals space from other panels.
     let constraints: Vec<Constraint> = panels
         .iter()
         .map(|p| {
+            let h = p.content.height() + 2;
             if p.truncated {
                 Constraint::Fill(1)
+            } else if p.content.is_growable() {
+                Constraint::Fill(h)
             } else {
-                Constraint::Length(p.content.height() + 2)
+                Constraint::Length(h)
             }
         })
         .collect();
@@ -378,6 +575,7 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
+        .flex(Flex::Start)
         .split(area);
 
     for (i, panel) in panels.iter().enumerate() {
@@ -401,28 +599,660 @@ fn render_column(frame: &mut ratatui::Frame, area: Rect, panels: &[&Panel<'_>], 
                 frame.render_widget(block, chunks[i]);
                 render_rows(frame, inner, rows);
             }
-            PanelContent::MultiCol { rows, columns } => {
+            PanelContent::TimeChart { series, y_unit } => {
+                render_time_chart(frame, chunks[i], block, series, y_unit, theme);
+            }
+            PanelContent::CpuAnalyzer(data) => {
                 let inner = block.inner(chunks[i]);
                 frame.render_widget(block, chunks[i]);
-                let ncols = (*columns).max(1) as usize;
-                let rows_per_col = rows.len().div_ceil(ncols);
-                let col_constraints: Vec<Constraint> = (0..ncols)
-                    .map(|_| Constraint::Ratio(1, ncols as u32))
-                    .collect();
-                let col_areas = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints(col_constraints)
-                    .split(inner);
-                for (c, col_area) in col_areas.iter().enumerate() {
-                    let start = c * rows_per_col;
-                    let end = rows.len().min(start + rows_per_col);
-                    if start < end {
-                        render_rows(frame, *col_area, &rows[start..end]);
-                    }
-                }
+                render_cpu_analyzer(frame, inner, data, theme);
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// CPU Analyzer — composite panel rendering
+// ---------------------------------------------------------------------------
+
+/// Render the full CPU Analyzer panel. Side columns (Power, L3, DDR) are
+/// always shown — greyed out when data is unavailable.
+fn render_cpu_analyzer(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    data: &CpuAnalyzerData,
+    _theme: &TuiTheme,
+) {
+    if area.width < 10 || area.height < 5 {
+        return;
+    }
+
+    // Vertical: freq axis (1) + core rows + load axis (1) + legend (1)
+    let vert = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // freq axis
+            Constraint::Fill(1),   // core rows
+            Constraint::Length(1), // load axis
+            Constraint::Length(1), // legend
+        ])
+        .flex(Flex::Start)
+        .split(area);
+    let freq_axis_area = vert[0];
+    let core_area = vert[1];
+    let load_axis_area = vert[2];
+    let legend_area = vert[3];
+
+    // Horizontal columns — applied to the CORE ROWS area.
+    // Side bars span the full content height (freq_axis through load_axis).
+    let side_area = Rect {
+        y: freq_axis_area.y,
+        height: freq_axis_area
+            .height
+            .saturating_add(core_area.height)
+            .saturating_add(load_axis_area.height),
+        ..area
+    };
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(6), // Power scale
+            Constraint::Length(3), // Power bar
+            Constraint::Length(6), // Core labels
+            Constraint::Length(5), // Load summary
+            Constraint::Fill(1),   // Histogram body
+            Constraint::Length(2), // L3 HR label
+            Constraint::Length(3), // L3 bar
+            Constraint::Length(2), // DRAM BW label
+            Constraint::Length(3), // DRAM bar
+        ])
+        .flex(Flex::Start)
+        .split(side_area);
+
+    // Side bars span full height (axes + core rows)
+    render_vertical_bar_or_grey(
+        frame,
+        cols[0],
+        cols[1],
+        data.power_histogram.as_ref(),
+        Color::Rgb(245, 160, 160),
+        Color::Rgb(95, 33, 33),
+    );
+    render_vertical_label(frame, cols[5], "L3 HR", Color::Rgb(196, 168, 224));
+    render_vertical_bar_single(
+        frame,
+        cols[6],
+        data.l3_histogram.as_ref(),
+        Color::Rgb(40, 15, 60),
+    );
+    render_vertical_label(frame, cols[7], "DRAM BW", Color::Rgb(192, 160, 224));
+    render_vertical_bar_single(
+        frame,
+        cols[8],
+        data.ddr_histogram.as_ref(),
+        Color::Rgb(70, 50, 100),
+    );
+
+    // Core labels + load summary use only the core_area Y range (aligned with histogram rows)
+    let core_labels_area = Rect {
+        y: core_area.y,
+        height: core_area.height,
+        ..cols[2]
+    };
+    let load_summary_area = Rect {
+        y: core_area.y,
+        height: core_area.height,
+        ..cols[3]
+    };
+    render_core_labels_grouped(frame, core_labels_area, &data.groups);
+    render_load_summary_grouped(frame, load_summary_area, &data.groups);
+
+    // Histogram body: axes + core rows in the central column
+    let hist_col = cols[4];
+    let hist_freq_axis = Rect {
+        y: freq_axis_area.y,
+        height: 1,
+        ..hist_col
+    };
+    let hist_core = Rect {
+        y: core_area.y,
+        height: core_area.height,
+        ..hist_col
+    };
+    let hist_load_axis = Rect {
+        y: load_axis_area.y,
+        height: 1,
+        ..hist_col
+    };
+    render_axis_line(
+        frame,
+        hist_freq_axis,
+        &data.freq_axis_labels,
+        Color::Rgb(122, 184, 245),
+    );
+    render_axis_line(
+        frame,
+        hist_load_axis,
+        &data.load_axis_labels,
+        Color::Rgb(143, 212, 143),
+    );
+    render_histogram_core_rows(frame, hist_core, data);
+
+    render_heat_legend(frame, legend_area, data);
+}
+
+/// Render a vertical bar column with scale labels. Greyed out if no data.
+fn render_vertical_bar_or_grey(
+    frame: &mut ratatui::Frame,
+    scale_area: Rect,
+    bar_area: Rect,
+    histogram: Option<&HistogramData>,
+    label_color: Color,
+    grey_bg: Color,
+) {
+    if let Some(h) = histogram {
+        // Scale labels — reversed so highest value is at the top
+        let mut labels_top_down: Vec<String> = h.axis_labels.clone();
+        labels_top_down.reverse();
+        render_vertical_scale(frame, scale_area, &labels_top_down, label_color);
+        // Histogram bar
+        render_vertical_bar_single(frame, bar_area, Some(h), h.bg_color);
+    } else {
+        // Greyed-out: show "N/A" centered in scale area, dim bars
+        let na_y = scale_area.y + scale_area.height / 2;
+        if na_y < scale_area.y + scale_area.height {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    format!("{:^w$}", "N/A", w = scale_area.width as usize),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Rect {
+                    y: na_y,
+                    height: 1,
+                    ..scale_area
+                },
+            );
+        }
+        for y in 0..bar_area.height {
+            let r = Rect {
+                y: bar_area.y + y,
+                height: 1,
+                ..bar_area
+            };
+            let fill: String = "\u{2591}".repeat(bar_area.width as usize);
+            frame.render_widget(
+                Paragraph::new(Line::styled(fill, Style::default().fg(grey_bg))),
+                r,
+            );
+        }
+    }
+}
+
+/// Render a single vertical histogram bar (or greyed-out placeholder).
+fn render_vertical_bar_single(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    histogram: Option<&HistogramData>,
+    grey_bg: Color,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    if let Some(h) = histogram {
+        if let Some((_, bins)) = h.rows.first() {
+            if !bins.is_empty() {
+                let gmax = h.global_max.max(f64::EPSILON);
+                for row in 0..area.height {
+                    // Bottom-up: row 0 = top of area, map to high bin indices
+                    let bin_idx =
+                        ((area.height - 1 - row) as usize * bins.len()) / area.height as usize;
+                    let bin_idx = bin_idx.min(bins.len() - 1);
+                    let fraction = bins[bin_idx] / gmax;
+                    let color = heat_color(fraction);
+                    let r = Rect {
+                        y: area.y + row,
+                        height: 1,
+                        ..area
+                    };
+                    let fill: String = "\u{2588}".repeat(area.width as usize);
+                    frame.render_widget(
+                        Paragraph::new(Line::styled(
+                            fill,
+                            Style::default().fg(color).bg(h.bg_color),
+                        )),
+                        r,
+                    );
+                }
+                return;
+            }
+        }
+    }
+    // Greyed-out placeholder with "N/A" centered
+    let mid = area.height / 2;
+    for row in 0..area.height {
+        let r = Rect {
+            y: area.y + row,
+            height: 1,
+            ..area
+        };
+        if row == mid {
+            // Show "N/A" (or "N" if width < 3) over the grey bar
+            let text = if area.width >= 3 {
+                "N/A"
+            } else {
+                "\u{00d7}" // × symbol
+            };
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    format!("{:^w$}", text, w = area.width as usize),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                r,
+            );
+        } else {
+            let fill: String = "\u{2591}".repeat(area.width as usize);
+            frame.render_widget(
+                Paragraph::new(Line::styled(fill, Style::default().fg(grey_bg))),
+                r,
+            );
+        }
+    }
+}
+
+/// Render vertical scale labels evenly distributed.
+fn render_vertical_scale(frame: &mut ratatui::Frame, area: Rect, labels: &[String], color: Color) {
+    if area.height == 0 || labels.is_empty() {
+        return;
+    }
+    let step = if labels.len() > 1 {
+        (area.height as usize).saturating_sub(1) / (labels.len() - 1).max(1)
+    } else {
+        0
+    };
+    for (i, label) in labels.iter().enumerate() {
+        let y = area.y + (i * step).min(area.height.saturating_sub(1) as usize) as u16;
+        let text: String = label.chars().take(area.width as usize).collect();
+        frame.render_widget(
+            Paragraph::new(Line::styled(text, Style::default().fg(color))),
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+/// Render a vertical text label (e.g., "L3", "DDR"), centered vertically.
+fn render_vertical_label(frame: &mut ratatui::Frame, area: Rect, text: &str, color: Color) {
+    let chars: Vec<char> = text.chars().collect();
+    let start_y = area.y + area.height.saturating_sub(chars.len() as u16) / 2;
+    for (i, &ch) in chars.iter().enumerate() {
+        let y = start_y + i as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!("{:^w$}", ch, w = area.width as usize),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )),
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+/// Render core labels: physical core bold, thread labels grey.
+fn render_core_labels_grouped(frame: &mut ratatui::Frame, area: Rect, groups: &[CoreGroup]) {
+    let w = area.width as usize;
+    let mut y = area.y;
+    for group in groups {
+        if y >= area.y + area.height {
+            break;
+        }
+        // Freq row: bold core label
+        let text: String = group.label.chars().take(w).collect();
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!("{:>w$}", text),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+        );
+        y += 1;
+        // Thread rows: grey labels
+        for thread in &group.threads {
+            if y >= area.y + area.height {
+                break;
+            }
+            let tl: String = thread.label.chars().take(w).collect();
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    format!("{:>w$}", tl),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+            y += 1;
+        }
+    }
+}
+
+/// Render load summary: one colored avg-load square per thread.
+fn render_load_summary_grouped(frame: &mut ratatui::Frame, area: Rect, groups: &[CoreGroup]) {
+    let w = area.width as usize;
+    let mut y = area.y;
+    for group in groups {
+        if y >= area.y + area.height {
+            break;
+        }
+        y += 1; // skip freq row (no load summary for it)
+        for thread in &group.threads {
+            if y >= area.y + area.height {
+                break;
+            }
+            let fraction = (thread.avg_load / 100.0).clamp(0.0, 1.0);
+            let color = heat_color(fraction);
+            let text = format!("{:>3.0}%", thread.avg_load);
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    format!("{:>w$}", text),
+                    Style::default().fg(Color::White).bg(color),
+                )),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+            y += 1;
+        }
+    }
+}
+
+/// Render grouped core histogram rows (no axes — caller handles those).
+fn render_histogram_core_rows(frame: &mut ratatui::Frame, area: Rect, data: &CpuAnalyzerData) {
+    if area.width == 0 || data.groups.is_empty() {
+        return;
+    }
+    let w = area.width as usize;
+    let freq_gmax = data.freq_global_max.max(f64::EPSILON);
+    let load_gmax = data.load_global_max.max(f64::EPSILON);
+    let mut y = area.y;
+
+    for group in &data.groups {
+        if y >= area.y + area.height {
+            break;
+        }
+        render_histogram_row(
+            frame,
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+            &group.freq_bins,
+            freq_gmax,
+            w,
+            data.freq_bg,
+            freq_heat_color,
+        );
+        y += 1;
+        for thread in &group.threads {
+            if y >= area.y + area.height {
+                break;
+            }
+            render_histogram_row(
+                frame,
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+                &thread.bins,
+                load_gmax,
+                w,
+                data.load_bg,
+                heat_color,
+            );
+            y += 1;
+        }
+    }
+}
+
+/// Render a single histogram row as colored `█` characters.
+/// `color_fn` maps a normalized fraction (0.0–1.0) to a display color.
+fn render_histogram_row(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    bins: &[f64],
+    global_max: f64,
+    target_width: usize,
+    bg_color: Color,
+    color_fn: fn(f64) -> Color,
+) {
+    if area.width == 0 || bins.is_empty() {
+        return;
+    }
+    let w = target_width.min(area.width as usize);
+    let spans: Vec<Span<'_>> = (0..w)
+        .map(|col| {
+            let bin_idx = (col * bins.len()) / w;
+            let bin_idx = bin_idx.min(bins.len() - 1);
+            let fraction = bins[bin_idx] / global_max;
+            Span::styled(
+                "\u{2588}",
+                Style::default().fg(color_fn(fraction)).bg(bg_color),
+            )
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Render axis labels evenly distributed across the width.
+fn render_axis_line(frame: &mut ratatui::Frame, area: Rect, labels: &[String], color: Color) {
+    if area.width == 0 || labels.is_empty() {
+        return;
+    }
+    let w = area.width as usize;
+    let mut buf = vec![' '; w];
+    let total_labels = labels.len();
+    let mut last_end = 0usize;
+    for (i, label) in labels.iter().enumerate() {
+        let pos = if total_labels <= 1 {
+            0
+        } else {
+            (i * w.saturating_sub(1)) / (total_labels - 1)
+        };
+        let start = pos.saturating_sub(label.len() / 2).max(last_end);
+        if start + label.len() > w {
+            continue;
+        }
+        for (j, ch) in label.chars().enumerate() {
+            if start + j < w {
+                buf[start + j] = ch;
+            }
+        }
+        last_end = start + label.len() + 1;
+    }
+    let text: String = buf.into_iter().collect();
+    frame.render_widget(
+        Paragraph::new(Line::styled(text, Style::default().fg(color))),
+        area,
+    );
+}
+
+/// Render the legend bar at the bottom of the CPU Analyzer panel.
+fn render_heat_legend(frame: &mut ratatui::Frame, area: Rect, _data: &CpuAnalyzerData) {
+    if area.width == 0 {
+        return;
+    }
+    let mut spans: Vec<Span<'_>> = Vec::new();
+
+    // Freq gradient (blue): min→max
+    spans.push(Span::raw("Freq "));
+    for i in 0..6 {
+        let frac = i as f64 / 5.0;
+        spans.push(Span::styled(
+            "\u{2588}",
+            Style::default().fg(freq_heat_color(frac)),
+        ));
+    }
+    // Load gradient (heat): min→max
+    spans.push(Span::raw("  Load "));
+    for i in 0..6 {
+        let frac = i as f64 / 5.0;
+        spans.push(Span::styled(
+            "\u{2588}",
+            Style::default().fg(heat_color(frac)),
+        ));
+    }
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        "\u{2588}\u{2588}",
+        Style::default().fg(Color::Rgb(190, 65, 65)),
+    ));
+    spans.push(Span::raw(" Power "));
+    spans.push(Span::styled(
+        "\u{2588}\u{2588}",
+        Style::default().fg(Color::Rgb(80, 30, 120)),
+    ));
+    spans.push(Span::raw(" L3 HR "));
+    spans.push(Span::styled(
+        "\u{2588}\u{2588}",
+        Style::default().fg(Color::Rgb(140, 100, 200)),
+    ));
+    spans.push(Span::raw(" DRAM BW"));
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Build a ChartSeries from sensor history, assigning a color from the palette.
+/// `max_points` limits the chart to the most recent N data points.
+fn make_chart_series(
+    id: &SensorId,
+    reading: &SensorReading,
+    history: &SensorHistory,
+    color_idx: usize,
+    max_points: usize,
+) -> ChartSeries {
+    let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+    let data: Vec<(f64, f64)> = history
+        .data
+        .get(&key)
+        .map(|buf| {
+            let start = buf.len().saturating_sub(max_points);
+            buf.iter()
+                .skip(start)
+                .enumerate()
+                .map(|(i, &v)| (i as f64, if v.is_finite() { v } else { 0.0 }))
+                .collect()
+        })
+        .unwrap_or_default();
+    let color = CHART_COLORS[color_idx % CHART_COLORS.len()];
+    ChartSeries {
+        name: truncate_label(&reading.label, 16),
+        color,
+        data,
+    }
+}
+
+fn render_time_chart(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    panel_block: Block<'_>,
+    series: &[ChartSeries],
+    y_unit: &str,
+    theme: &TuiTheme,
+) {
+    if series.is_empty() {
+        frame.render_widget(panel_block, area);
+        return;
+    }
+
+    // Find global Y bounds across all datasets
+    let mut y_min = f64::INFINITY;
+    let mut y_max = f64::NEG_INFINITY;
+    let mut x_max: f64 = 0.0;
+    for s in series {
+        for &(x, y) in &s.data {
+            if y.is_finite() {
+                if y < y_min {
+                    y_min = y;
+                }
+                if y > y_max {
+                    y_max = y;
+                }
+            }
+            if x > x_max {
+                x_max = x;
+            }
+        }
+    }
+    if !y_min.is_finite() || !y_max.is_finite() {
+        frame.render_widget(panel_block, area);
+        return;
+    }
+    // Add small padding to Y bounds
+    let y_range = (y_max - y_min).max(0.1);
+    y_min = (y_min - y_range * 0.05).max(0.0);
+    y_max += y_range * 0.05;
+
+    let datasets: Vec<Dataset<'_>> = series
+        .iter()
+        .map(|s| {
+            Dataset::default()
+                .name(s.name.as_str())
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(s.color))
+                .data(&s.data)
+        })
+        .collect();
+
+    let y_mid = (y_min + y_max) / 2.0;
+    let x_axis = Axis::default()
+        .bounds([0.0, x_max.max(1.0)])
+        .style(Style::default().fg(theme.muted));
+
+    let y_axis = Axis::default()
+        .bounds([y_min, y_max])
+        .labels([
+            format!("{:.0}{y_unit}", y_min),
+            format!("{:.0}{y_unit}", y_mid),
+            format!("{:.0}{y_unit}", y_max),
+        ])
+        .style(Style::default().fg(theme.muted));
+
+    let chart = Chart::new(datasets)
+        .block(panel_block)
+        .x_axis(x_axis)
+        .y_axis(y_axis)
+        .legend_position(Some(ratatui::widgets::LegendPosition::TopRight))
+        .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)));
+
+    frame.render_widget(chart, area);
 }
 
 fn render_rows(frame: &mut ratatui::Frame, area: Rect, rows: &[PanelRow<'_>]) {
@@ -430,6 +1260,7 @@ fn render_rows(frame: &mut ratatui::Frame, area: Rect, rows: &[PanelRow<'_>]) {
     let row_areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints(row_constraints)
+        .flex(Flex::Start)
         .split(area);
     for (j, row) in rows.iter().enumerate() {
         if j >= row_areas.len() {
@@ -477,43 +1308,43 @@ fn build_panels<'a>(
     // truncated panels expand via Fill(1). Paragraph clips any overflow.
     let max_entries = max_entries_for_column(layout.available_rows);
 
+    let chart_max = layout.chart_max_points;
+
     let mut panels = Vec::new();
 
-    if let Some(p) = build_cpu_panel(snapshot, history, spark_width, theme) {
+    if let Some(p) = build_cpu_panel(snapshot, history, layout, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_thermal_panel(snapshot, history, spark_width, max_entries, theme) {
+    if let Some(p) = build_thermal_panel(snapshot, history, spark_width, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_memory_panel(snapshot, theme) {
+    if let Some(p) = build_memory_panel(snapshot, history, chart_max, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_power_panel(snapshot, history, spark_width, max_entries, theme) {
+    if let Some(p) = build_power_panel(snapshot, history, chart_max, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_storage_panel(snapshot, max_entries, theme) {
+    if let Some(p) = build_storage_panel(snapshot, history, chart_max, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_network_panel(snapshot, max_entries, theme) {
+    if let Some(p) = build_network_panel(snapshot, history, chart_max, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_fans_panel(snapshot, max_entries, theme) {
+    if let Some(p) = build_fans_panel(snapshot, history, chart_max, theme) {
         panels.push(p);
     }
     if let Some(p) = build_platform_panel(snapshot, max_entries, theme) {
         panels.push(p);
     }
-    // Per-core panels only in 3-col — too many rows for narrow layouts
     if three_col {
-        if let Some(p) = build_cpu_freq_panel(snapshot, history, spark_width, max_entries, theme) {
+        if let Some(p) = build_cpu_freq_panel(snapshot, history, chart_max, theme) {
             panels.push(p);
         }
     }
-    // Voltage and GPU in all layout modes
-    if let Some(p) = build_voltage_panel(snapshot, history, spark_width, max_entries, theme) {
+    if let Some(p) = build_voltage_panel(snapshot, history, chart_max, theme) {
         panels.push(p);
     }
-    if let Some(p) = build_gpu_panel(snapshot, history, spark_width, max_entries, theme) {
+    if let Some(p) = build_gpu_panel(snapshot, history, chart_max, theme) {
         panels.push(p);
     }
     if let Some(p) = build_errors_panel(snapshot, theme) {
@@ -527,7 +1358,7 @@ fn build_panels<'a>(
         // Right: Thermal, Power, Fans, Platform
         for panel in &mut panels {
             panel.column = match panel.title.as_str() {
-                "CPU" | "CPU Freq" => Column::Left,
+                "CPU" | "CPU Analyzer" | "CCD Analyzer" | "CPU Freq" => Column::Left,
                 "Memory" | "Storage" | "Network" | "Voltage" | "GPU" => Column::Center,
                 "Thermal" | "Power" | "Fans" | "Platform" => Column::Right,
                 _ => Column::Left, // Errors, etc.
@@ -546,9 +1377,11 @@ fn build_panels<'a>(
 fn build_cpu_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
-    spark_width: usize,
-    theme: &TuiTheme,
+    layout: &LayoutParams,
+    _theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
+    let chart_max = layout.chart_max_points;
+
     let util_sensors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
         .filter(|(id, _)| id.source == "cpu" && id.chip == "utilization")
@@ -556,29 +1389,6 @@ fn build_cpu_panel<'a>(
 
     if util_sensors.is_empty() {
         return None;
-    }
-
-    let mut rows: Vec<PanelRow<'_>> = Vec::new();
-    let mut headline: Option<String> = None;
-
-    // Total CPU utilization gauge
-    if let Some((_, reading)) = util_sensors.iter().find(|(id, _)| id.sensor == "total") {
-        headline = Some(format!("{:.1}%", reading.current));
-        let accent = theme.panel_cpu;
-        let filled_style = if reading.current > 90.0 {
-            Style::default().fg(theme.crit)
-        } else if reading.current > 70.0 {
-            Style::default().fg(theme.warn)
-        } else {
-            Style::default().fg(accent)
-        };
-        rows.push(PanelRow::Gauge {
-            label_style: theme.label_style(),
-            label: String::new(),
-            ratio: reading.current / 100.0,
-            filled_style,
-            unfilled_style: Style::default().fg(theme.muted),
-        });
     }
 
     // Per-core dense bar
@@ -589,64 +1399,438 @@ fn build_cpu_panel<'a>(
         .collect();
     cores.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
 
-    if !cores.is_empty() {
-        // Per-core heatmap grid: each core is a colored ██ block.
-        // Fixed at 24 cores per row (fits 3-col layout with 2-char-wide blocks).
-        let cols_per_row = 24usize;
-        for chunk in cores.chunks(cols_per_row) {
-            let spans: Vec<Span<'_>> = chunk
-                .iter()
-                .map(|(_, r)| {
-                    let color =
-                        theme.sparkline_color(SensorCategory::Utilization, r.current / 100.0);
-                    Span::styled("\u{2588}\u{2588}", Style::default().fg(color))
-                })
-                .collect();
-            rows.push(PanelRow::Text(Line::from(spans)));
-        }
+    let numa_nodes = read_numa_nodes();
+    let multi_numa = numa_nodes.len() > 1;
+
+    // Total utilization headline
+    let headline = util_sensors
+        .iter()
+        .find(|(id, _)| id.sensor == "total")
+        .map(|(_, r)| format!("{:.1}%", r.current));
+
+    // Number of histogram buckets = estimate based on terminal width
+    // Subtract fixed columns (~25 chars) from available column width
+    let col_width = layout.spark_width + 35; // reverse the subtraction in compute_layout
+    let num_buckets = col_width.saturating_sub(25).clamp(10, 80);
+
+    if cores.is_empty() {
+        return None;
     }
 
-    // RAPL package power (CPU total power draw)
+    // Always use CpuAnalyzer — works even with 0 history samples (shows empty histogram)
+    let analyzer = build_cpu_analyzer_data(
+        snapshot,
+        history,
+        &cores,
+        &numa_nodes,
+        multi_numa,
+        chart_max,
+        num_buckets,
+    );
+
+    Some(Panel {
+        title: if multi_numa {
+            "CCD Analyzer".into()
+        } else {
+            "CPU Analyzer".into()
+        },
+        headline,
+        content: PanelContent::CpuAnalyzer(Box::new(analyzer)),
+
+        column: Column::Left,
+        truncated: false,
+    })
+}
+
+/// Build the CpuAnalyzerData from sensor history.
+///
+/// For single NUMA: groups logical CPUs by physical core (via
+/// `/sys/devices/system/cpu/cpu*/topology/core_id`). Each physical core
+/// gets 1 freq row + N thread load rows (like CPU-Heatmap: C0, Th1, Th2).
+/// For multi-NUMA: each NUMA node becomes one group with one aggregated row.
+fn build_cpu_analyzer_data(
+    snapshot: &[(SensorId, SensorReading)],
+    history: &SensorHistory,
+    cores: &[(&SensorId, &SensorReading)],
+    numa_nodes: &[(u32, Vec<usize>)],
+    multi_numa: bool,
+    chart_max: usize,
+    num_buckets: usize,
+) -> CpuAnalyzerData {
+    // Find global freq range across all cores
+    let mut freq_min = f64::INFINITY;
+    let mut freq_max = f64::NEG_INFINITY;
+    for (id, _) in cores {
+        let key = format!("cpu/cpufreq/{}", id.sensor);
+        if let Some(buf) = history.data.get(&key) {
+            for &v in &history_samples(buf, chart_max) {
+                if v < freq_min {
+                    freq_min = v;
+                }
+                if v > freq_max {
+                    freq_max = v;
+                }
+            }
+        }
+    }
+    if freq_min.is_finite() && freq_max.is_finite() {
+        freq_min = (freq_min / 100.0).floor() * 100.0;
+        freq_max = (freq_max / 100.0).ceil() * 100.0;
+    } else {
+        freq_min = 0.0;
+        freq_max = 5000.0;
+    }
+
+    let groups: Vec<CoreGroup> = if multi_numa {
+        // Multi-NUMA: one group per NUMA node, aggregated
+        let mut g: Vec<CoreGroup> = numa_nodes
+            .iter()
+            .filter_map(|(node_id, cpu_set)| {
+                let thread_sensors: Vec<&str> = cores
+                    .iter()
+                    .filter(|(id, _)| {
+                        let cpu_num: usize = id
+                            .sensor
+                            .trim_start_matches("cpu")
+                            .parse()
+                            .unwrap_or(usize::MAX);
+                        cpu_set.contains(&cpu_num)
+                    })
+                    .map(|(id, _)| id.sensor.as_str())
+                    .collect();
+                if thread_sensors.is_empty() {
+                    return None;
+                }
+                // Aggregate frequency across all cores in this CCD
+                let all_freq: Vec<Vec<f64>> = thread_sensors
+                    .iter()
+                    .filter_map(|s| {
+                        history
+                            .data
+                            .get(&format!("cpu/cpufreq/{s}"))
+                            .map(|b| history_samples(b, chart_max))
+                    })
+                    .collect();
+                let freq_samples = average_samples(&all_freq);
+                let freq_bins = compute_histogram(&freq_samples, num_buckets, freq_min, freq_max);
+
+                // Aggregate load across all cores in this CCD
+                let all_util: Vec<Vec<f64>> = thread_sensors
+                    .iter()
+                    .filter_map(|s| {
+                        history
+                            .data
+                            .get(&format!("cpu/utilization/{s}"))
+                            .map(|b| history_samples(b, chart_max))
+                    })
+                    .collect();
+                let util_samples = average_samples(&all_util);
+                let load_bins = compute_histogram(&util_samples, num_buckets, 0.0, 100.0);
+                let avg = if util_samples.is_empty() {
+                    0.0
+                } else {
+                    util_samples.iter().sum::<f64>() / util_samples.len() as f64
+                };
+
+                Some(CoreGroup {
+                    label: format!("CCD{node_id}"),
+                    freq_bins,
+                    threads: vec![ThreadRow {
+                        label: String::new(),
+                        bins: load_bins,
+                        avg_load: avg,
+                    }],
+                })
+            })
+            .collect();
+        g.sort_by_key(|g| g.label.clone());
+        g
+    } else {
+        // Single NUMA: group by physical core_id
+        let phys_map = read_physical_core_map();
+        if phys_map.is_empty() {
+            // Fallback: treat each logical CPU as its own core with 1 thread
+            cores
+                .iter()
+                .map(|(id, _)| {
+                    let cpu_num = id.sensor.trim_start_matches("cpu");
+                    let sensor = id.sensor.as_str();
+                    let freq_samples = history
+                        .data
+                        .get(&format!("cpu/cpufreq/{sensor}"))
+                        .map(|b| history_samples(b, chart_max))
+                        .unwrap_or_default();
+                    let util_samples = history
+                        .data
+                        .get(&format!("cpu/utilization/{sensor}"))
+                        .map(|b| history_samples(b, chart_max))
+                        .unwrap_or_default();
+                    let avg = if util_samples.is_empty() {
+                        0.0
+                    } else {
+                        util_samples.iter().sum::<f64>() / util_samples.len() as f64
+                    };
+                    CoreGroup {
+                        label: format!("C{cpu_num}"),
+                        freq_bins: compute_histogram(
+                            &freq_samples,
+                            num_buckets,
+                            freq_min,
+                            freq_max,
+                        ),
+                        threads: vec![ThreadRow {
+                            label: "Th1".into(),
+                            bins: compute_histogram(&util_samples, num_buckets, 0.0, 100.0),
+                            avg_load: avg,
+                        }],
+                    }
+                })
+                .collect()
+        } else {
+            // Group logical CPUs by physical core_id
+            let mut phys_groups: std::collections::BTreeMap<u32, Vec<usize>> =
+                std::collections::BTreeMap::new();
+            for (id, _) in cores {
+                let cpu_num: usize = id
+                    .sensor
+                    .trim_start_matches("cpu")
+                    .parse()
+                    .unwrap_or(usize::MAX);
+                if let Some(&phys_id) = phys_map.get(&cpu_num) {
+                    phys_groups.entry(phys_id).or_default().push(cpu_num);
+                }
+            }
+            phys_groups
+                .into_iter()
+                .map(|(phys_id, mut cpus)| {
+                    cpus.sort();
+                    // Frequency: average across sibling threads (they share the same P-state)
+                    let all_freq: Vec<Vec<f64>> = cpus
+                        .iter()
+                        .filter_map(|&cpu| {
+                            history
+                                .data
+                                .get(&format!("cpu/cpufreq/cpu{cpu}"))
+                                .map(|b| history_samples(b, chart_max))
+                        })
+                        .collect();
+                    let freq_samples = average_samples(&all_freq);
+                    let freq_bins =
+                        compute_histogram(&freq_samples, num_buckets, freq_min, freq_max);
+
+                    // Each thread gets its own load row
+                    let threads: Vec<ThreadRow> = cpus
+                        .iter()
+                        .enumerate()
+                        .map(|(ti, &cpu)| {
+                            let util_samples = history
+                                .data
+                                .get(&format!("cpu/utilization/cpu{cpu}"))
+                                .map(|b| history_samples(b, chart_max))
+                                .unwrap_or_default();
+                            let avg = if util_samples.is_empty() {
+                                0.0
+                            } else {
+                                util_samples.iter().sum::<f64>() / util_samples.len() as f64
+                            };
+                            ThreadRow {
+                                label: format!("Th{}", ti + 1),
+                                bins: compute_histogram(&util_samples, num_buckets, 0.0, 100.0),
+                                avg_load: avg,
+                            }
+                        })
+                        .collect();
+
+                    CoreGroup {
+                        label: format!("C{phys_id}"),
+                        freq_bins,
+                        threads,
+                    }
+                })
+                .collect()
+        }
+    };
+
+    // Compute global max for color normalization
+    let freq_global_max = groups
+        .iter()
+        .flat_map(|g| g.freq_bins.iter())
+        .copied()
+        .fold(0.0f64, f64::max);
+    let load_global_max = groups
+        .iter()
+        .flat_map(|g| g.threads.iter().flat_map(|t| t.bins.iter()))
+        .copied()
+        .fold(0.0f64, f64::max);
+
+    let freq_axis_labels = axis_labels(freq_min, freq_max, 6, "", 0);
+    let load_axis_labels = axis_labels(0.0, 100.0, 6, "%", 0);
+
+    CpuAnalyzerData {
+        groups,
+        freq_global_max,
+        load_global_max,
+        freq_axis_labels,
+        load_axis_labels,
+        freq_bg: Color::Rgb(15, 30, 65),
+        load_bg: Color::Rgb(12, 45, 20),
+        power_histogram: build_power_histogram(snapshot, history, chart_max),
+        l3_histogram: build_side_histogram(
+            history,
+            "perf/cache/l3_hit_rate",
+            chart_max,
+            0.0,
+            100.0,
+            Color::Rgb(40, 15, 60),
+        ),
+        ddr_histogram: build_ddr_histogram(snapshot, history, chart_max),
+    }
+}
+
+/// Read physical core_id for each logical CPU from sysfs topology.
+/// Returns a map of logical_cpu_num → physical_core_id.
+fn read_physical_core_map() -> std::collections::HashMap<usize, u32> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(entries) = std::fs::read_dir("/sys/devices/system/cpu") else {
+        return map;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(num_str) = name.strip_prefix("cpu") {
+            if let Ok(cpu_num) = num_str.parse::<usize>() {
+                let core_id_path = entry.path().join("topology/core_id");
+                if let Ok(content) = std::fs::read_to_string(&core_id_path) {
+                    if let Ok(core_id) = content.trim().parse::<u32>() {
+                        map.insert(cpu_num, core_id);
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Average multiple sample vectors element-wise (for CCD aggregation).
+fn average_samples(all: &[Vec<f64>]) -> Vec<f64> {
+    if all.is_empty() {
+        return Vec::new();
+    }
+    let max_len = all.iter().map(|v| v.len()).max().unwrap_or(0);
+    (0..max_len)
+        .map(|i| {
+            let (sum, count) = all
+                .iter()
+                .filter_map(|v| v.get(i).copied())
+                .filter(|v| v.is_finite())
+                .fold((0.0, 0u32), |(s, c), v| (s + v, c + 1));
+            if count > 0 { sum / count as f64 } else { 0.0 }
+        })
+        .collect()
+}
+
+/// Build power histogram from RAPL package sensors.
+fn build_power_histogram(
+    snapshot: &[(SensorId, SensorReading)],
+    history: &SensorHistory,
+    chart_max: usize,
+) -> Option<HistogramData> {
     let rapl_pkgs: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
         .filter(|(id, _)| {
             id.source == "cpu" && id.chip == "rapl" && id.sensor.starts_with("package")
         })
         .collect();
-    let multi_pkg = rapl_pkgs.len() > 1;
-    for (id, reading) in &rapl_pkgs {
-        let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-        let spark_spans = history
-            .data
-            .get(&key)
-            .map(|buf| sparkline_spans(buf, spark_width, reading.category, theme))
-            .unwrap_or_default();
-        let prec = format_precision(&reading.unit);
-        // On multi-socket systems, include the package index to disambiguate
-        let label = if multi_pkg {
-            format!("Pkg {}: ", id.sensor.trim_start_matches("package-"))
-        } else {
-            "Power: ".into()
-        };
-        let mut spans = vec![
-            Span::styled(label, theme.label_style()),
-            Span::styled(
-                format!("{:>6.*}{}", prec, reading.current, reading.unit),
-                theme.power_style(),
-            ),
-            Span::raw("  "),
-        ];
-        spans.extend(spark_spans);
-        rows.push(PanelRow::Text(Line::from(spans)));
+    if rapl_pkgs.is_empty() {
+        return None;
     }
+    // Aggregate all package power samples
+    let mut all_samples = Vec::new();
+    for (id, _) in &rapl_pkgs {
+        let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+        if let Some(buf) = history.data.get(&key) {
+            all_samples.extend(history_samples(buf, chart_max));
+        }
+    }
+    if all_samples.is_empty() {
+        return None;
+    }
+    let pmin = (all_samples.iter().copied().fold(f64::INFINITY, f64::min) / 5.0).floor() * 5.0;
+    let pmax = (all_samples
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max)
+        / 5.0)
+        .ceil()
+        * 5.0;
+    let num_buckets = 20;
+    let bins = compute_histogram(&all_samples, num_buckets, pmin, pmax);
+    let gmax = bins.iter().copied().fold(0.0f64, f64::max);
+    let labels = axis_labels(pmin, pmax, 5, "W", 0);
 
-    Some(Panel {
-        title: "CPU".into(),
-        headline,
-        content: PanelContent::Mixed(rows),
-        column: Column::Left,
-        truncated: false,
+    Some(HistogramData {
+        rows: vec![("Power".into(), bins)],
+        global_max: gmax,
+        axis_labels: labels,
+        bg_color: Color::Rgb(95, 33, 33),
     })
+}
+
+/// Build a side histogram from a single sensor key.
+fn build_side_histogram(
+    history: &SensorHistory,
+    key: &str,
+    chart_max: usize,
+    min: f64,
+    max: f64,
+    bg_color: Color,
+) -> Option<HistogramData> {
+    let buf = history.data.get(key)?;
+    let samples = history_samples(buf, chart_max);
+    if samples.is_empty() {
+        return None;
+    }
+    let num_buckets = 20;
+    let bins = compute_histogram(&samples, num_buckets, min, max);
+    let gmax = bins.iter().copied().fold(0.0f64, f64::max);
+    Some(HistogramData {
+        rows: vec![(key.into(), bins)],
+        global_max: gmax,
+        axis_labels: Vec::new(),
+        bg_color,
+    })
+}
+
+/// Build DDR bandwidth histogram from HSMP or resctrl sensors.
+fn build_ddr_histogram(
+    snapshot: &[(SensorId, SensorReading)],
+    history: &SensorHistory,
+    chart_max: usize,
+) -> Option<HistogramData> {
+    // Try HSMP DDR bandwidth first
+    let ddr_sensor = snapshot.iter().find(|(id, _)| {
+        id.source == "hsmp" && (id.sensor == "ddr_bw_used" || id.sensor == "ddr_bw_util")
+    });
+    if let Some((id, _)) = ddr_sensor {
+        let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
+        return build_side_histogram(
+            history,
+            &key,
+            chart_max,
+            0.0,
+            100.0,
+            Color::Rgb(70, 50, 100),
+        );
+    }
+    // Try resctrl MBM
+    build_side_histogram(
+        history,
+        "resctrl/L3_0/mbm_total",
+        chart_max,
+        0.0,
+        100.0,
+        Color::Rgb(70, 50, 100),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -657,7 +1841,6 @@ fn build_thermal_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
     spark_width: usize,
-    max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let mut temps: Vec<&(SensorId, SensorReading)> = snapshot
@@ -674,8 +1857,10 @@ fn build_thermal_panel<'a>(
             .partial_cmp(&a.current)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let total = temps.len();
-    temps.truncate(max_entries);
+
+    let headline = temps
+        .first()
+        .map(|(_, r)| format!("{:.1}\u{00b0}C", r.current));
 
     let lines: Vec<Line<'_>> = temps
         .iter()
@@ -701,16 +1886,13 @@ fn build_thermal_panel<'a>(
         })
         .collect();
 
-    let headline = temps
-        .first()
-        .map(|(_, r)| format!("{:.1}\u{00b0}C", r.current));
-
     Some(Panel {
         title: "Thermal".into(),
         headline,
         content: PanelContent::Lines(lines),
+
         column: Column::Right,
-        truncated: total > max_entries,
+        truncated: false,
     })
 }
 
@@ -727,11 +1909,40 @@ fn is_hsmp_memory_sensor(id: &SensorId) -> bool {
 
 fn build_memory_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
+    history: &'a SensorHistory,
+    chart_max: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
+    // Chart: track RAM and Swap utilization over time
+    let mem_sensors: Vec<&(SensorId, SensorReading)> = snapshot
+        .iter()
+        .filter(|(id, _)| {
+            id.source == "memory" && (id.sensor == "ram_util" || id.sensor == "swap_util")
+        })
+        .collect();
+
+    if !mem_sensors.is_empty() {
+        let series: Vec<ChartSeries> = mem_sensors
+            .iter()
+            .enumerate()
+            .map(|(i, (id, r))| make_chart_series(id, r, history, i, chart_max))
+            .collect();
+        return Some(Panel {
+            title: "Memory".into(),
+            headline: None,
+            content: PanelContent::TimeChart {
+                series,
+                y_unit: "%".into(),
+            },
+
+            column: Column::Left,
+            truncated: false,
+        });
+    }
+
     let mut rows: Vec<PanelRow<'a>> = Vec::new();
 
-    // RAM usage gauge
+    // RAM usage gauge (fallback when no history)
     let ram_util = snapshot
         .iter()
         .find(|(id, _)| id.source == "memory" && id.sensor == "ram_util");
@@ -838,6 +2049,7 @@ fn build_memory_panel<'a>(
         title: "Memory".into(),
         headline: None,
         content: PanelContent::Mixed(rows),
+
         column: Column::Left,
         truncated: false,
     })
@@ -850,9 +2062,8 @@ fn build_memory_panel<'a>(
 fn build_power_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
-    spark_width: usize,
-    max_entries: usize,
-    theme: &TuiTheme,
+    chart_max: usize,
+    _theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let mut power: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
@@ -870,39 +2081,24 @@ fn build_power_panel<'a>(
             .partial_cmp(&a.current)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let total = power.len();
-    power.truncate(max_entries);
+    power.truncate(CHART_COLORS.len());
 
-    let lines: Vec<Line<'_>> = power
+    let series: Vec<ChartSeries> = power
         .iter()
-        .map(|(id, r)| {
-            let label = truncate_label(&r.label, 20);
-            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            let spark_spans = history
-                .data
-                .get(&key)
-                .map(|buf| sparkline_spans(buf, spark_width, r.category, theme))
-                .unwrap_or_default();
-            let prec = format_precision(&r.unit);
-            let mut spans = vec![
-                Span::styled(format!("{label:<20} "), theme.label_style()),
-                Span::styled(
-                    format!("{:>7.*}{}", prec, r.current, r.unit),
-                    theme.power_style(),
-                ),
-                Span::raw(" "),
-            ];
-            spans.extend(spark_spans);
-            Line::from(spans)
-        })
+        .enumerate()
+        .map(|(i, (id, r))| make_chart_series(id, r, history, i, chart_max))
         .collect();
 
     Some(Panel {
         title: "Power".into(),
         headline: None,
-        content: PanelContent::Lines(lines),
+        content: PanelContent::TimeChart {
+            series,
+            y_unit: "W".into(),
+        },
+
         column: Column::Right,
-        truncated: total > max_entries,
+        truncated: false,
     })
 }
 
@@ -912,58 +2108,39 @@ fn build_power_panel<'a>(
 
 fn build_storage_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
-    max_entries: usize,
-    theme: &TuiTheme,
+    history: &'a SensorHistory,
+    chart_max: usize,
+    _theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
+    // Chart: read/write throughput per device over time
     let disk_sensors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
-        .filter(|(id, _)| id.source == "disk")
+        .filter(|(id, _)| {
+            id.source == "disk" && (id.sensor == "read_mbps" || id.sensor == "write_mbps")
+        })
         .collect();
 
     if disk_sensors.is_empty() {
         return None;
     }
 
-    // Group by chip (device name), find read/write per device
-    let mut devices: HashMap<&str, (Option<f64>, Option<f64>)> = HashMap::new();
-    for (id, r) in &disk_sensors {
-        let entry = devices.entry(id.chip.as_str()).or_insert((None, None));
-        if id.sensor == "read_mbps" {
-            entry.0 = Some(r.current);
-        } else if id.sensor == "write_mbps" {
-            entry.1 = Some(r.current);
-        }
-    }
-
-    let mut dev_list: Vec<(&str, f64, f64)> = devices
-        .into_iter()
-        .map(|(name, (r, w))| (name, r.unwrap_or(0.0), w.unwrap_or(0.0)))
-        .collect();
-    dev_list.sort_by(|a, b| a.0.cmp(b.0));
-    let total_devs = dev_list.len();
-    dev_list.truncate(max_entries);
-
-    let lines: Vec<Line<'_>> = dev_list
-        .into_iter()
-        .map(|(name, read, write)| {
-            let dev = truncate_label(name, 10);
-            Line::from(vec![
-                Span::styled(format!("{dev:<10}"), theme.label_style()),
-                Span::styled(" R ", theme.good_style()),
-                Span::styled(format!("{read:>8.1}"), theme.good_style()),
-                Span::styled("  W ", theme.crit_style()),
-                Span::styled(format!("{write:>8.1}"), theme.crit_style()),
-                Span::styled(" MB/s", theme.muted_style()),
-            ])
-        })
+    let series: Vec<ChartSeries> = disk_sensors
+        .iter()
+        .take(CHART_COLORS.len())
+        .enumerate()
+        .map(|(i, (id, r))| make_chart_series(id, r, history, i, chart_max))
         .collect();
 
     Some(Panel {
         title: "Storage".into(),
         headline: None,
-        content: PanelContent::Lines(lines),
+        content: PanelContent::TimeChart {
+            series,
+            y_unit: "MB/s".into(),
+        },
+
         column: Column::Left,
-        truncated: total_devs > max_entries,
+        truncated: false,
     })
 }
 
@@ -971,95 +2148,39 @@ fn build_storage_panel<'a>(
 // Network Panel
 // ---------------------------------------------------------------------------
 
-struct NetIfaceData<'a> {
-    name: &'a str,
-    rx: f64,
-    tx: f64,
-    link_speed_mb: Option<f64>,
-}
-
 fn build_network_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
-    max_entries: usize,
-    theme: &TuiTheme,
+    history: &'a SensorHistory,
+    chart_max: usize,
+    _theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
-    let net_sensors: Vec<&(SensorId, SensorReading)> = snapshot
+    // Chart: RX/TX throughput per interface over time
+    let throughput_sensors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
-        .filter(|(id, _)| id.source == "net")
+        .filter(|(id, _)| id.source == "net" && (id.sensor == "rx_mbps" || id.sensor == "tx_mbps"))
         .collect();
 
-    if net_sensors.is_empty() {
+    if throughput_sensors.is_empty() {
         return None;
     }
 
-    // Group by chip (interface name)
-    let mut ifaces: HashMap<&str, NetIfaceData<'_>> = HashMap::new();
-    for (id, r) in &net_sensors {
-        let entry = ifaces.entry(id.chip.as_str()).or_insert(NetIfaceData {
-            name: id.chip.as_str(),
-            rx: 0.0,
-            tx: 0.0,
-            link_speed_mb: None,
-        });
-        match id.sensor.as_str() {
-            "rx_mbps" => entry.rx = r.current,
-            "tx_mbps" => entry.tx = r.current,
-            "link_speed" => entry.link_speed_mb = Some(r.current),
-            _ => {}
-        }
-    }
-
-    let mut iface_list: Vec<NetIfaceData<'_>> = ifaces.into_values().collect();
-    iface_list.sort_by(|a, b| a.name.cmp(b.name));
-    let total_ifaces = iface_list.len();
-    iface_list.truncate(max_entries);
-
-    const BAR_WIDTH: usize = 6;
-    let lines: Vec<Line<'_>> = iface_list
+    let series: Vec<ChartSeries> = throughput_sensors
         .iter()
-        .map(|d| {
-            let iface = truncate_label(d.name, 10);
-            let rx_bar = net_bar(d.rx, d.link_speed_mb, BAR_WIDTH);
-            let tx_bar = net_bar(d.tx, d.link_speed_mb, BAR_WIDTH);
-            // link_speed_mb is in MiB/s; convert back to Mbps for display
-            let link = match d.link_speed_mb {
-                Some(mibs) => {
-                    let mbps = mibs * 8.388_608;
-                    if mbps >= 1000.0 {
-                        let gbps = mbps / 1000.0;
-                        // Show decimal for fractional speeds (2.5G, 5G, etc.)
-                        if (gbps - gbps.round()).abs() < 0.1 {
-                            format!(" {:.0}G", gbps.round())
-                        } else {
-                            format!(" {:.1}G", gbps)
-                        }
-                    } else {
-                        format!(" {:.0}M", mbps.round())
-                    }
-                }
-                None => String::new(),
-            };
-            Line::from(vec![
-                Span::styled(format!("{iface:<10}"), theme.label_style()),
-                Span::styled(" \u{2193}", theme.good_style()),
-                Span::styled(format!("{:>7.1}", d.rx), theme.good_style()),
-                Span::raw(" "),
-                Span::styled(rx_bar, theme.good_style()),
-                Span::styled(" \u{2191}", theme.info_style()),
-                Span::styled(format!("{:>7.1}", d.tx), theme.info_style()),
-                Span::raw(" "),
-                Span::styled(tx_bar, theme.info_style()),
-                Span::styled(link, theme.muted_style()),
-            ])
-        })
+        .take(CHART_COLORS.len())
+        .enumerate()
+        .map(|(i, (id, r))| make_chart_series(id, r, history, i, chart_max))
         .collect();
 
     Some(Panel {
         title: "Network".into(),
         headline: None,
-        content: PanelContent::Lines(lines),
+        content: PanelContent::TimeChart {
+            series,
+            y_unit: "MB/s".into(),
+        },
+
         column: Column::Right,
-        truncated: total_ifaces > max_entries,
+        truncated: false,
     })
 }
 
@@ -1069,8 +2190,9 @@ fn build_network_panel<'a>(
 
 fn build_fans_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
-    max_entries: usize,
-    theme: &TuiTheme,
+    history: &'a SensorHistory,
+    chart_max: usize,
+    _theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let mut fans: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
@@ -1082,38 +2204,24 @@ fn build_fans_panel<'a>(
     }
 
     fans.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
-    let total_fans = fans.len();
-    let use_two_col = total_fans > 6;
-    let effective_max = if use_two_col {
-        max_entries * 2
-    } else {
-        max_entries
-    };
-    fans.truncate(effective_max);
+    fans.truncate(CHART_COLORS.len());
 
-    let rows: Vec<PanelRow<'_>> = fans
+    let series: Vec<ChartSeries> = fans
         .iter()
-        .map(|(_, r)| {
-            let label = truncate_label(&r.label, 16);
-            PanelRow::Text(Line::from(vec![
-                Span::styled(format!("{label:<16} "), theme.label_style()),
-                Span::styled(format!("{:>5.0} RPM", r.current), theme.value_style(r)),
-            ]))
-        })
+        .enumerate()
+        .map(|(i, (id, r))| make_chart_series(id, r, history, i, chart_max))
         .collect();
-
-    let content = if use_two_col {
-        PanelContent::MultiCol { rows, columns: 2 }
-    } else {
-        PanelContent::Mixed(rows)
-    };
 
     Some(Panel {
         title: "Fans".into(),
         headline: None,
-        content,
+        content: PanelContent::TimeChart {
+            series,
+            y_unit: "RPM".into(),
+        },
+
         column: Column::Left,
-        truncated: total_fans > effective_max,
+        truncated: false,
     })
 }
 
@@ -1160,6 +2268,7 @@ fn build_platform_panel<'a>(
         title: "Platform".into(),
         headline: None,
         content: PanelContent::Lines(lines),
+
         column: Column::Right,
         truncated: total_hsmp > max_entries,
     })
@@ -1171,12 +2280,11 @@ fn build_platform_panel<'a>(
 
 fn build_cpu_freq_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
-    _history: &'a SensorHistory,
-    _spark_width: usize,
-    max_entries: usize,
-    theme: &TuiTheme,
+    history: &'a SensorHistory,
+    chart_max: usize,
+    _theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
-    let mut freqs: Vec<&(SensorId, SensorReading)> = snapshot
+    let freqs: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
         .filter(|(id, _)| id.source == "cpu" && id.chip == "cpufreq")
         .collect();
@@ -1185,55 +2293,64 @@ fn build_cpu_freq_panel<'a>(
         return None;
     }
 
-    freqs.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
-    let total = freqs.len();
-    // Only use 2-column layout when entries exceed single-column capacity
-    let use_two_col = total > max_entries;
-    let effective_max = if use_two_col {
-        max_entries * 2
+    let numa_nodes = read_numa_nodes();
+    let series: Vec<ChartSeries> = if numa_nodes.len() > 1 {
+        // Multi-NUMA: pick the highest-frequency core per NUMA node
+        let mut node_series: Vec<ChartSeries> = numa_nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (node_id, cpu_set))| {
+                // Find the core with the highest current frequency in this node
+                let best = freqs
+                    .iter()
+                    .filter(|(id, _)| {
+                        let cpu_num: usize = id
+                            .sensor
+                            .trim_start_matches("cpu")
+                            .parse()
+                            .unwrap_or(usize::MAX);
+                        cpu_set.contains(&cpu_num)
+                    })
+                    .max_by(|(_, a), (_, b)| {
+                        a.current
+                            .partial_cmp(&b.current)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })?;
+                let (id, r) = best;
+                let mut s = make_chart_series(id, r, history, i, chart_max);
+                s.name = format!("NUMA {node_id} Frequency");
+                Some(s)
+            })
+            .collect();
+        node_series.truncate(CHART_COLORS.len());
+        node_series
     } else {
-        max_entries
-    };
-    freqs.truncate(effective_max);
-
-    // Use the global max observed frequency as the gauge ceiling
-    let max_freq = freqs
-        .iter()
-        .map(|(_, r)| r.max)
-        .fold(0.0f64, f64::max)
-        .max(1.0);
-
-    let rows: Vec<PanelRow<'_>> = freqs
-        .iter()
-        .map(|(_, r)| {
-            let ratio = if max_freq > 0.0 {
-                r.current / max_freq
-            } else {
-                0.0
-            };
-            let label = truncate_label(&r.label, 14);
-            PanelRow::Gauge {
-                label: format!("{label:<14} {:>5.0}{}", r.current, r.unit),
-                label_style: theme.label_style(),
-                ratio,
-                filled_style: Style::default().fg(theme.panel_frequency),
-                unfilled_style: Style::default().fg(theme.muted),
-            }
-        })
-        .collect();
-
-    let content = if use_two_col {
-        PanelContent::MultiCol { rows, columns: 2 }
-    } else {
-        PanelContent::Mixed(rows)
+        // Single NUMA: show individual cores (limited for readability)
+        let mut sorted = freqs;
+        sorted.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
+        sorted.truncate(CHART_COLORS.len());
+        sorted
+            .iter()
+            .enumerate()
+            .map(|(i, (id, r))| {
+                let mut s = make_chart_series(id, r, history, i, chart_max);
+                let core_num = id.sensor.trim_start_matches("cpu");
+                s.name = format!("Core {core_num} Frequency");
+                s
+            })
+            .collect()
     };
 
     Some(Panel {
         title: "CPU Freq".into(),
         headline: None,
-        content,
+        content: PanelContent::TimeChart {
+            series,
+            y_unit: "MHz".into(),
+        },
+
         column: Column::Center,
-        truncated: total > effective_max,
+        truncated: false,
     })
 }
 
@@ -1244,9 +2361,8 @@ fn build_cpu_freq_panel<'a>(
 fn build_voltage_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
-    spark_width: usize,
-    max_entries: usize,
-    theme: &TuiTheme,
+    chart_max: usize,
+    _theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let mut volts: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
@@ -1258,39 +2374,24 @@ fn build_voltage_panel<'a>(
     }
 
     volts.sort_by(|(a, _), (b, _)| a.natural_cmp(b));
-    let total = volts.len();
-    volts.truncate(max_entries);
+    volts.truncate(CHART_COLORS.len());
 
-    let lines: Vec<Line<'_>> = volts
+    let series: Vec<ChartSeries> = volts
         .iter()
-        .map(|(id, r)| {
-            let label = truncate_label(&r.label, 20);
-            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            let spark_spans = history
-                .data
-                .get(&key)
-                .map(|buf| sparkline_spans(buf, spark_width, r.category, theme))
-                .unwrap_or_default();
-            let prec = format_precision(&r.unit);
-            let mut spans = vec![
-                Span::styled(format!("{label:<20} "), theme.label_style()),
-                Span::styled(
-                    format!("{:>7.*}{}", prec, r.current, r.unit),
-                    theme.voltage_style(),
-                ),
-                Span::raw(" "),
-            ];
-            spans.extend(spark_spans);
-            Line::from(spans)
-        })
+        .enumerate()
+        .map(|(i, (id, r))| make_chart_series(id, r, history, i, chart_max))
         .collect();
 
     Some(Panel {
         title: "Voltage".into(),
         headline: None,
-        content: PanelContent::Lines(lines),
-        column: Column::Right, // 2-col: right; 3-col: remapped to center
-        truncated: total > max_entries,
+        content: PanelContent::TimeChart {
+            series,
+            y_unit: "V".into(),
+        },
+
+        column: Column::Right,
+        truncated: false,
     })
 }
 
@@ -1301,9 +2402,8 @@ fn build_voltage_panel<'a>(
 fn build_gpu_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
-    spark_width: usize,
-    max_entries: usize,
-    theme: &TuiTheme,
+    chart_max: usize,
+    _theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
     let gpu_sensors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
@@ -1314,57 +2414,23 @@ fn build_gpu_panel<'a>(
         return None;
     }
 
-    let total = gpu_sensors.len();
-    let lines: Vec<Line<'_>> = gpu_sensors
+    let series: Vec<ChartSeries> = gpu_sensors
         .iter()
-        .take(max_entries)
-        .map(|(id, r)| {
-            // Build a compact label: "GPU0 Temp", "GPU1 Power", etc.
-            let gpu_idx = id.chip.trim_start_matches(|c: char| !c.is_ascii_digit());
-            let sensor_name = match id.sensor.as_str() {
-                "temperature" => "Temp",
-                "fan_speed" | "fan" => "Fan",
-                "power" => "Power",
-                "core_clock" => "Core Clk",
-                "mem_clock" => "Mem Clk",
-                "gpu_util" => "GPU Util",
-                "mem_util" => "Mem Util",
-                "vram_used" => "VRAM Used",
-                other => other,
-            };
-            let label = format!("GPU{gpu_idx} {sensor_name}");
-            let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
-            // Use uniform color for all GPU sparklines to avoid rainbow effect
-            let spark_spans = history
-                .data
-                .get(&key)
-                .map(|buf| sparkline_spans(buf, spark_width, SensorCategory::Other, theme))
-                .unwrap_or_default();
-            let prec = format_precision(&r.unit);
-            let unit_str = r.unit.to_string();
-            // Pad unit to 3 display columns (°C is 2 chars but 3 bytes)
-            let unit_display_width = unit_str.chars().count();
-            let unit_padded = format!(
-                "{unit_str}{}",
-                " ".repeat(3usize.saturating_sub(unit_display_width))
-            );
-            let mut spans = vec![
-                Span::styled(format!("{label:<20} "), theme.label_style()),
-                Span::styled(format!("{:>7.*}", prec, r.current), theme.value_style(r)),
-                Span::styled(unit_padded, theme.muted_style()),
-                Span::raw(" "),
-            ];
-            spans.extend(spark_spans);
-            Line::from(spans)
-        })
+        .take(CHART_COLORS.len())
+        .enumerate()
+        .map(|(i, (id, r))| make_chart_series(id, r, history, i, chart_max))
         .collect();
 
     Some(Panel {
         title: "GPU".into(),
         headline: None,
-        content: PanelContent::Lines(lines),
-        column: Column::Left, // 2-col: left; 3-col: remapped to center
-        truncated: total > max_entries,
+        content: PanelContent::TimeChart {
+            series,
+            y_unit: String::new(),
+        },
+
+        column: Column::Left,
+        truncated: false,
     })
 }
 
@@ -1410,6 +2476,7 @@ fn build_errors_panel<'a>(
         title: "Errors".into(),
         headline: None,
         content: PanelContent::Lines(lines),
+
         column: Column::Left, // doesn't matter, errors span full width
         truncated: false,
     })
@@ -1549,6 +2616,7 @@ fn build_custom_panel<'a>(
         title: config.title.clone(),
         headline: None,
         content: PanelContent::Lines(lines),
+
         column: Column::Left, // caller will reassign
         truncated: total_matched > max,
     })
@@ -1561,6 +2629,7 @@ fn build_custom_panel<'a>(
 /// Network activity bar. Uses link-speed utilization when available,
 /// falls back to log-scale (0.01–1000+ MiB/s) otherwise.
 /// Both `mibs` and `link_speed_mibs` are in MiB/s (binary megabytes/sec).
+#[cfg(test)]
 fn net_bar(mibs: f64, link_speed_mibs: Option<f64>, width: usize) -> String {
     let frac = if let Some(speed) = link_speed_mibs {
         if speed > 0.0 {
@@ -1578,6 +2647,42 @@ fn net_bar(mibs: f64, link_speed_mibs: Option<f64>, width: usize) -> String {
     (0..width)
         .map(|i| if i < filled { '\u{2588}' } else { '\u{2591}' })
         .collect()
+}
+
+/// Read NUMA node topology from sysfs. Returns sorted (node_id, cpu_set) pairs.
+fn read_numa_nodes() -> Vec<(u32, Vec<usize>)> {
+    let Ok(entries) = std::fs::read_dir("/sys/devices/system/node") else {
+        return Vec::new();
+    };
+    let mut nodes: Vec<(u32, Vec<usize>)> = entries
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let name = e.file_name();
+            let name = name.to_str()?;
+            let node_id: u32 = name.strip_prefix("node")?.parse().ok()?;
+            let cpulist = std::fs::read_to_string(e.path().join("cpulist")).ok()?;
+            let cpus = parse_cpulist(&cpulist);
+            Some((node_id, cpus))
+        })
+        .collect();
+    nodes.sort_by_key(|(id, _)| *id);
+    nodes
+}
+
+/// Parse a CPU list string like "0-3,8-11" into a sorted Vec of CPU IDs.
+fn parse_cpulist(s: &str) -> Vec<usize> {
+    let mut result = Vec::new();
+    for part in s.trim().split(',') {
+        let part = part.trim();
+        if let Some((start, end)) = part.split_once('-') {
+            if let (Ok(s), Ok(e)) = (start.parse::<usize>(), end.parse::<usize>()) {
+                result.extend(s..=e);
+            }
+        } else if let Ok(n) = part.parse::<usize>() {
+            result.push(n);
+        }
+    }
+    result
 }
 
 fn truncate_label(label: &str, max: usize) -> String {
@@ -1640,7 +2745,9 @@ mod tests {
     fn test_compute_layout_small() {
         let l = compute_layout(80, 24, 9);
         assert_eq!(l.num_columns, 1);
-        assert_eq!(l.spark_width, 10);
+
+        // spark_width = 80 - 35 = 45 (fills remaining column width)
+        assert_eq!(l.spark_width, 45);
         assert!(l.max_entries >= 2);
     }
 
@@ -1648,7 +2755,9 @@ mod tests {
     fn test_compute_layout_standard() {
         let l = compute_layout(160, 50, 9);
         assert_eq!(l.num_columns, 2);
-        assert_eq!(l.spark_width, 15);
+
+        // spark_width = 80 - 35 = 45
+        assert_eq!(l.spark_width, 45);
         assert!(l.max_entries > 6);
     }
 
@@ -1656,14 +2765,18 @@ mod tests {
     fn test_compute_layout_ultrawide() {
         let l = compute_layout(250, 60, 9);
         assert_eq!(l.num_columns, 3);
-        assert_eq!(l.spark_width, 20);
+
+        // spark_width = 83 - 35 = 48
+        assert_eq!(l.spark_width, 48);
     }
 
     #[test]
     fn test_compute_layout_tiny() {
         let l = compute_layout(60, 10, 9);
         assert_eq!(l.num_columns, 1);
-        assert_eq!(l.spark_width, 0);
+
+        // spark_width = 60 - 35 = 25
+        assert_eq!(l.spark_width, 25);
         assert_eq!(l.max_entries, 2); // clamped to minimum
     }
 

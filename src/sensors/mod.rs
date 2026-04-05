@@ -18,8 +18,10 @@ pub mod ipmi;
 pub mod mce;
 pub mod memory_util;
 pub mod network_stats;
+pub mod perf_cache;
 pub mod poller;
 pub mod rapl;
+pub mod resctrl;
 pub mod superio;
 
 use crate::model::sensor::{SensorId, SensorReading};

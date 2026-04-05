@@ -300,6 +300,8 @@ fn discover_all_sources(
             Box::new(super::aer::AerSource::discover()),
             Box::new(super::mce::MceSource::discover()),
             Box::new(super::memory_util::MemoryUtilSource::discover()),
+            Box::new(super::perf_cache::PerfCacheSource::discover()),
+            Box::new(super::resctrl::ResctrlSource::discover()),
         ];
 
         // Tegra platform sources (devfreq GPU, hardware engines)

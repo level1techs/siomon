@@ -20,11 +20,27 @@ pub struct SiomonConfig {
     pub dashboard: DashboardConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardConfig {
     /// User-defined panels. If non-empty, replaces all built-in panels.
     #[serde(default)]
     pub panels: Vec<PanelConfig>,
+    /// Chart history window in seconds (default 10).
+    #[serde(default = "default_chart_history_secs")]
+    pub chart_history_secs: u64,
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self {
+            panels: Vec::new(),
+            chart_history_secs: default_chart_history_secs(),
+        }
+    }
+}
+
+fn default_chart_history_secs() -> u64 {
+    10
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

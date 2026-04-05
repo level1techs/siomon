@@ -155,7 +155,19 @@ pub(crate) fn sparkline_spans<'a>(
     let range = max - min;
 
     // Second pass: build per-character spans with gradient colors.
+    let visible = data.len().saturating_sub(start);
     let mut spans = Vec::with_capacity(width);
+
+    // Pad left side so the sparkline fills the full width immediately
+    // instead of growing one character at a time as history accumulates.
+    if visible < width {
+        let pad = width - visible;
+        let pad_color = theme.sparkline_color(category, 0.0);
+        for _ in 0..pad {
+            spans.push(Span::styled(SPARK_STRS[0], Style::default().fg(pad_color)));
+        }
+    }
+
     for &v in data.iter().skip(start) {
         if !v.is_finite() {
             continue;
@@ -407,6 +419,7 @@ fn run_loop(
                     sensor_count,
                     &theme,
                     dashboard_config,
+                    poll_interval_ms,
                     &sys_summary,
                 )?;
             }
