@@ -151,23 +151,25 @@ fn collect_ip_addresses(name: &str) -> Vec<IpAddress> {
 
         let mut current = ifaddrs;
         while !current.is_null() {
-            let ifa = current.read();
-            current = ifa.ifa_next;
+            // codeql[rust/access-invalid-pointer] - getifaddrs contract guarantees validity until freeifaddrs
+            let ifa = &*current;
 
             if ifa.ifa_name.is_null() || ifa.ifa_addr.is_null() {
+                current = ifa.ifa_next;
                 continue;
             }
             let ifa_name = std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy();
             if ifa_name != name {
+                current = ifa.ifa_next;
                 continue;
             }
 
-            let family = ifa.ifa_addr.read().sa_family as i32;
+            let family = (*ifa.ifa_addr).sa_family as i32;
             if family == libc::AF_INET {
-                let addr = (ifa.ifa_addr as *const libc::sockaddr_in).read();
+                let addr = &*(ifa.ifa_addr as *const libc::sockaddr_in);
                 let ip = std::net::Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
                 let prefix = if !ifa.ifa_netmask.is_null() {
-                    let mask = (ifa.ifa_netmask as *const libc::sockaddr_in).read();
+                    let mask = &*(ifa.ifa_netmask as *const libc::sockaddr_in);
                     u32::from_be(mask.sin_addr.s_addr).count_ones() as u8
                 } else {
                     0
@@ -179,10 +181,10 @@ fn collect_ip_addresses(name: &str) -> Vec<IpAddress> {
                     scope: None,
                 });
             } else if family == libc::AF_INET6 {
-                let addr = (ifa.ifa_addr as *const libc::sockaddr_in6).read();
+                let addr = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
                 let ip = std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr);
                 let prefix = if !ifa.ifa_netmask.is_null() {
-                    let mask = (ifa.ifa_netmask as *const libc::sockaddr_in6).read();
+                    let mask = &*(ifa.ifa_netmask as *const libc::sockaddr_in6);
                     mask.sin6_addr
                         .s6_addr
                         .iter()
@@ -199,6 +201,7 @@ fn collect_ip_addresses(name: &str) -> Vec<IpAddress> {
                     scope,
                 });
             }
+            current = ifa.ifa_next;
         }
         libc::freeifaddrs(ifaddrs);
     }
