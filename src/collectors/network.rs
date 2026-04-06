@@ -128,6 +128,17 @@ fn classify_interface(name: &str, type_code: u32, is_physical: bool) -> NetworkI
     NetworkInterfaceType::Unknown(type_code)
 }
 
+fn ipv6_scope(ip: &std::net::Ipv6Addr) -> &'static str {
+    let octets = ip.octets();
+    if octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80 {
+        "link"
+    } else if ip.is_loopback() {
+        "host"
+    } else {
+        "global"
+    }
+}
+
 fn collect_ip_addresses(name: &str) -> Vec<IpAddress> {
     let mut addrs = Vec::new();
 
@@ -140,51 +151,54 @@ fn collect_ip_addresses(name: &str) -> Vec<IpAddress> {
 
         let mut current = ifaddrs;
         while !current.is_null() {
-            let ifa = &*current;
-            let ifa_name = std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy();
-            if ifa_name == name && !ifa.ifa_addr.is_null() {
-                let family = (*ifa.ifa_addr).sa_family as i32;
-                if family == libc::AF_INET {
-                    let addr = &*(ifa.ifa_addr as *const libc::sockaddr_in);
-                    let ip = std::net::Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
-                    let prefix = if !ifa.ifa_netmask.is_null() {
-                        let mask = &*(ifa.ifa_netmask as *const libc::sockaddr_in);
-                        u32::from_be(mask.sin_addr.s_addr).count_ones() as u8
-                    } else {
-                        0
-                    };
-                    addrs.push(IpAddress {
-                        address: ip.to_string(),
-                        prefix_len: prefix,
-                        family: "inet".into(),
-                        scope: None,
-                    });
-                } else if family == libc::AF_INET6 {
-                    let addr = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
-                    let ip = std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr);
-                    let prefix = if !ifa.ifa_netmask.is_null() {
-                        let mask = &*(ifa.ifa_netmask as *const libc::sockaddr_in6);
-                        mask.sin6_addr
-                            .s6_addr
-                            .iter()
-                            .map(|b| b.count_ones() as u8)
-                            .sum()
-                    } else {
-                        0
-                    };
-                    let scope = match addr.sin6_scope_id {
-                        0 => Some("global".into()),
-                        _ => Some("link".into()),
-                    };
-                    addrs.push(IpAddress {
-                        address: ip.to_string(),
-                        prefix_len: prefix,
-                        family: "inet6".into(),
-                        scope,
-                    });
-                }
-            }
+            let ifa = current.read();
             current = ifa.ifa_next;
+
+            if ifa.ifa_name.is_null() || ifa.ifa_addr.is_null() {
+                continue;
+            }
+            let ifa_name = std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy();
+            if ifa_name != name {
+                continue;
+            }
+
+            let family = ifa.ifa_addr.read().sa_family as i32;
+            if family == libc::AF_INET {
+                let addr = (ifa.ifa_addr as *const libc::sockaddr_in).read();
+                let ip = std::net::Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
+                let prefix = if !ifa.ifa_netmask.is_null() {
+                    let mask = (ifa.ifa_netmask as *const libc::sockaddr_in).read();
+                    u32::from_be(mask.sin_addr.s_addr).count_ones() as u8
+                } else {
+                    0
+                };
+                addrs.push(IpAddress {
+                    address: ip.to_string(),
+                    prefix_len: prefix,
+                    family: "inet".into(),
+                    scope: None,
+                });
+            } else if family == libc::AF_INET6 {
+                let addr = (ifa.ifa_addr as *const libc::sockaddr_in6).read();
+                let ip = std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr);
+                let prefix = if !ifa.ifa_netmask.is_null() {
+                    let mask = (ifa.ifa_netmask as *const libc::sockaddr_in6).read();
+                    mask.sin6_addr
+                        .s6_addr
+                        .iter()
+                        .map(|b| b.count_ones() as u8)
+                        .sum()
+                } else {
+                    0
+                };
+                let scope = Some(ipv6_scope(&ip).into());
+                addrs.push(IpAddress {
+                    address: ip.to_string(),
+                    prefix_len: prefix,
+                    family: "inet6".into(),
+                    scope,
+                });
+            }
         }
         libc::freeifaddrs(ifaddrs);
     }
