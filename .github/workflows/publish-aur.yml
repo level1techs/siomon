@@ -29,6 +29,9 @@ on:
       PKG_GIT_EMAIL:
         required: true
 
+permissions:
+  contents: read
+
 jobs:
   publish:
     name: Build and push to AUR
