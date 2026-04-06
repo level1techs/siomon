@@ -33,7 +33,7 @@ The GitHub Actions workflow (`.github/workflows/publish-ppa.yml`) runs on
 4. Creates an orig tarball (`siomon_{version}+ds{repack}.orig.tar.gz`).
 5. For each Ubuntu series, copies the `debian/` templates, writes a
    series-specific changelog, adjusts build dependencies (Noble uses
-   `cargo-1.85`/`rustc-1.85`), and runs `debuild -S`.
+   `cargo-1.88`/`rustc-1.88`), and runs `debuild -S`.
 6. Signs all `.changes` files with GPG via `debsign`.
 7. **Ensures the GPG key is on `keyserver.ubuntu.com`** — checks
    retrievability; if missing, publishes the key and dispatches the
@@ -64,7 +64,7 @@ Example progression:
 
 | Series | Rust Packages | Cargo Binary |
 |--------|--------------|--------------|
-| Noble (24.04) | `cargo-1.85`, `rustc-1.85` | `cargo-1.85` |
+| Noble (24.04) | `cargo-1.88`, `rustc-1.88` | `cargo-1.88` |
 | Others (e.g., Questing) | `cargo`, `rustc` | `cargo` |
 
 The workflow uses `sed` to adjust `debian/control` (Build-Depends) and

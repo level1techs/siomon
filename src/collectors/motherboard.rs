@@ -90,11 +90,11 @@ fn supplement_from_smbios(info: &mut MotherboardInfo, data: &smbios::SmbiosData)
         if info.bios.date.is_none() {
             info.bios.date = bios.release_date.clone();
         }
-        if info.bios.release.is_none() {
-            if let (Some(major), Some(minor)) = (bios.major_release, bios.minor_release) {
-                // Match the sysfs format: "major.minor"
-                info.bios.release = Some(format!("{major}.{minor}"));
-            }
+        if info.bios.release.is_none()
+            && let (Some(major), Some(minor)) = (bios.major_release, bios.minor_release)
+        {
+            // Match the sysfs format: "major.minor"
+            info.bios.release = Some(format!("{major}.{minor}"));
         }
     }
 }

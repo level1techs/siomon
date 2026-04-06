@@ -315,32 +315,32 @@ fn poll_amd(gpus: &[AmdGpu], readings: &mut Vec<(SensorId, SensorReading)>) {
             ));
         }
 
-        if let Some(ref path) = gpu.busy_path {
-            if let Some(pct) = sysfs::read_u64_optional(path) {
-                let id = sid("amdgpu", &chip, "gpu_util");
-                let label = format!("{} GPU Utilization", gpu.name);
-                readings.push((
-                    id,
-                    SensorReading::new(
-                        label,
-                        pct as f64,
-                        SensorUnit::Percent,
-                        SensorCategory::Utilization,
-                    ),
-                ));
-            }
+        if let Some(ref path) = gpu.busy_path
+            && let Some(pct) = sysfs::read_u64_optional(path)
+        {
+            let id = sid("amdgpu", &chip, "gpu_util");
+            let label = format!("{} GPU Utilization", gpu.name);
+            readings.push((
+                id,
+                SensorReading::new(
+                    label,
+                    pct as f64,
+                    SensorUnit::Percent,
+                    SensorCategory::Utilization,
+                ),
+            ));
         }
 
-        if let Some(ref path) = gpu.vram_used_path {
-            if let Some(used) = sysfs::read_u64_optional(path) {
-                let id = sid("amdgpu", &chip, "vram_used");
-                let label = format!("{} VRAM Used", gpu.name);
-                let mb = used as f64 / (1024.0 * 1024.0);
-                readings.push((
-                    id,
-                    SensorReading::new(label, mb, SensorUnit::Megabytes, SensorCategory::Memory),
-                ));
-            }
+        if let Some(ref path) = gpu.vram_used_path
+            && let Some(used) = sysfs::read_u64_optional(path)
+        {
+            let id = sid("amdgpu", &chip, "vram_used");
+            let label = format!("{} VRAM Used", gpu.name);
+            let mb = used as f64 / (1024.0 * 1024.0);
+            readings.push((
+                id,
+                SensorReading::new(label, mb, SensorUnit::Megabytes, SensorCategory::Memory),
+            ));
         }
     }
 }

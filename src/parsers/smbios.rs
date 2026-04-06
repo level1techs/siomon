@@ -520,11 +520,11 @@ fn decode_memory_size(raw_size: u16, data: &[u8], header_len: usize) -> u64 {
 
     if raw_size == 0x7FFF {
         // Extended size at offset 0x1C (u32, megabytes, bit 31 reserved).
-        if header_len > 0x1F {
-            if let Some(ext) = read_u32_le(data, 0x1C) {
-                let mb = (ext & 0x7FFF_FFFF) as u64;
-                return mb * 1024 * 1024;
-            }
+        if header_len > 0x1F
+            && let Some(ext) = read_u32_le(data, 0x1C)
+        {
+            let mb = (ext & 0x7FFF_FFFF) as u64;
+            return mb * 1024 * 1024;
         }
         return 0;
     }

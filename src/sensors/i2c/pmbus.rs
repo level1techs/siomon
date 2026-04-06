@@ -175,10 +175,10 @@ impl PmbusSource {
             };
 
             // Select PMBus page if this device uses multi-page
-            if let Some(page) = dev.page {
-                if smbus.write_byte_data(PMBUS_PAGE, page).is_err() {
-                    continue;
-                }
+            if let Some(page) = dev.page
+                && smbus.write_byte_data(PMBUS_PAGE, page).is_err()
+            {
+                continue;
             }
 
             for reg in REGISTERS {
@@ -374,12 +374,11 @@ fn probe_pmbus_with_pages(bus: u32, addr: u16, vrm_index: &mut u32) -> Vec<Pmbus
     }
 
     // Fix up labels: if we found multiple pages, relabel the first one
-    if results.len() > 1 {
-        if let Some(first) = results.first_mut() {
-            first.label_prefix =
-                format!("VRM {} page 0 (bus {} addr {:#04x})", *vrm_index, bus, addr);
-            first.id_prefix = format!("vrm{}_p0", *vrm_index);
-        }
+    if results.len() > 1
+        && let Some(first) = results.first_mut()
+    {
+        first.label_prefix = format!("VRM {} page 0 (bus {} addr {:#04x})", *vrm_index, bus, addr);
+        first.id_prefix = format!("vrm{}_p0", *vrm_index);
     }
 
     // Reset page to 0 when done

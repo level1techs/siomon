@@ -19,14 +19,14 @@ pub fn collect(direct_io: bool, board: Option<&'static BoardTemplate>) -> Memory
     };
 
     // Enrich DIMMs with SPD EEPROM data on supported boards (requires --direct-io).
-    if let Some(b) = direct_io.then_some(board).flatten() {
-        if let Some(ddr5_config) = b.ddr5_bus_config {
-            enrich_dimms_with_spd(
-                &mut dimms,
-                ddr5_config,
-                b.requirements.get(crate::db::boards::FEAT_DDR5),
-            );
-        }
+    if let Some(b) = direct_io.then_some(board).flatten()
+        && let Some(ddr5_config) = b.ddr5_bus_config
+    {
+        enrich_dimms_with_spd(
+            &mut dimms,
+            ddr5_config,
+            b.requirements.get(crate::db::boards::FEAT_DDR5),
+        );
     }
 
     MemoryInfo {
@@ -169,87 +169,86 @@ fn parse_dmi_type17(text: &str) -> Vec<DimmInfo> {
         let trimmed = line.trim();
 
         if trimmed.starts_with("Memory Device") {
-            if let Some(builder) = current.take() {
-                if let Some(dimm) = builder.build() {
-                    dimms.push(dimm);
-                }
+            if let Some(builder) = current.take()
+                && let Some(dimm) = builder.build()
+            {
+                dimms.push(dimm);
             }
             current = Some(DimmBuilder::default());
         }
 
-        if let Some(ref mut b) = current {
-            if let Some((key, val)) = trimmed.split_once(':') {
-                let key = key.trim();
-                let val = val.trim();
-                if val == "Not Provided"
-                    || val == "Unknown"
-                    || val == "No Module Installed"
-                    || val == "Not Specified"
-                {
-                    continue;
+        if let Some(ref mut b) = current
+            && let Some((key, val)) = trimmed.split_once(':')
+        {
+            let key = key.trim();
+            let val = val.trim();
+            if val == "Not Provided"
+                || val == "Unknown"
+                || val == "No Module Installed"
+                || val == "Not Specified"
+            {
+                continue;
+            }
+            match key {
+                "Locator" => b.locator = Some(val.to_string()),
+                "Bank Locator" => b.bank_locator = Some(val.to_string()),
+                "Manufacturer" => b.manufacturer = filter_placeholder(val),
+                "Part Number" => b.part_number = filter_placeholder(val),
+                "Serial Number" => b.serial_number = filter_placeholder(val),
+                "Size" => {
+                    if let Some(mb_str) = val.strip_suffix(" MB") {
+                        b.size_bytes = mb_str.trim().parse::<u64>().ok().map(|v| v * 1024 * 1024);
+                    } else if let Some(gb_str) = val.strip_suffix(" GB") {
+                        b.size_bytes = gb_str
+                            .trim()
+                            .parse::<u64>()
+                            .ok()
+                            .map(|v| v * 1024 * 1024 * 1024);
+                    }
                 }
-                match key {
-                    "Locator" => b.locator = Some(val.to_string()),
-                    "Bank Locator" => b.bank_locator = Some(val.to_string()),
-                    "Manufacturer" => b.manufacturer = filter_placeholder(val),
-                    "Part Number" => b.part_number = filter_placeholder(val),
-                    "Serial Number" => b.serial_number = filter_placeholder(val),
-                    "Size" => {
-                        if let Some(mb_str) = val.strip_suffix(" MB") {
-                            b.size_bytes =
-                                mb_str.trim().parse::<u64>().ok().map(|v| v * 1024 * 1024);
-                        } else if let Some(gb_str) = val.strip_suffix(" GB") {
-                            b.size_bytes = gb_str
-                                .trim()
-                                .parse::<u64>()
-                                .ok()
-                                .map(|v| v * 1024 * 1024 * 1024);
-                        }
-                    }
-                    "Type" => b.memory_type = Some(parse_memory_type(val)),
-                    "Form Factor" => b.form_factor = Some(val.to_string()),
-                    "Type Detail" => b.type_detail = Some(val.to_string()),
-                    "Speed" => {
-                        b.max_speed_mts = val
-                            .split_whitespace()
-                            .next()
-                            .and_then(|s| s.parse::<u32>().ok());
-                    }
-                    "Configured Memory Speed" | "Configured Clock Speed" => {
-                        b.configured_speed_mts = val
-                            .split_whitespace()
-                            .next()
-                            .and_then(|s| s.parse::<u32>().ok());
-                    }
-                    "Configured Voltage" => {
-                        if let Some(v_str) = val.strip_suffix(" V") {
-                            b.configured_voltage_mv = v_str
-                                .trim()
-                                .parse::<f64>()
-                                .ok()
-                                .map(|v| (v * 1000.0) as u32);
-                        }
-                    }
-                    "Data Width" => {
-                        b.data_width_bits = val
-                            .strip_suffix(" bits")
-                            .and_then(|s| s.trim().parse::<u16>().ok());
-                    }
-                    "Total Width" => {
-                        b.total_width_bits = val
-                            .strip_suffix(" bits")
-                            .and_then(|s| s.trim().parse::<u16>().ok());
-                    }
-                    "Rank" => b.rank = val.parse::<u8>().ok(),
-                    _ => {}
+                "Type" => b.memory_type = Some(parse_memory_type(val)),
+                "Form Factor" => b.form_factor = Some(val.to_string()),
+                "Type Detail" => b.type_detail = Some(val.to_string()),
+                "Speed" => {
+                    b.max_speed_mts = val
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse::<u32>().ok());
                 }
+                "Configured Memory Speed" | "Configured Clock Speed" => {
+                    b.configured_speed_mts = val
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse::<u32>().ok());
+                }
+                "Configured Voltage" => {
+                    if let Some(v_str) = val.strip_suffix(" V") {
+                        b.configured_voltage_mv = v_str
+                            .trim()
+                            .parse::<f64>()
+                            .ok()
+                            .map(|v| (v * 1000.0) as u32);
+                    }
+                }
+                "Data Width" => {
+                    b.data_width_bits = val
+                        .strip_suffix(" bits")
+                        .and_then(|s| s.trim().parse::<u16>().ok());
+                }
+                "Total Width" => {
+                    b.total_width_bits = val
+                        .strip_suffix(" bits")
+                        .and_then(|s| s.trim().parse::<u16>().ok());
+                }
+                "Rank" => b.rank = val.parse::<u8>().ok(),
+                _ => {}
             }
         }
     }
-    if let Some(builder) = current {
-        if let Some(dimm) = builder.build() {
-            dimms.push(dimm);
-        }
+    if let Some(builder) = current
+        && let Some(dimm) = builder.build()
+    {
+        dimms.push(dimm);
     }
     dimms
 }

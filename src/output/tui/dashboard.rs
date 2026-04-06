@@ -504,10 +504,10 @@ fn build_panels<'a>(
         panels.push(p);
     }
     // Per-core panels only in 3-col — too many rows for narrow layouts
-    if three_col {
-        if let Some(p) = build_cpu_freq_panel(snapshot, history, spark_width, max_entries, theme) {
-            panels.push(p);
-        }
+    if three_col
+        && let Some(p) = build_cpu_freq_panel(snapshot, history, spark_width, max_entries, theme)
+    {
+        panels.push(p);
     }
     // Voltage and GPU in all layout modes
     if let Some(p) = build_voltage_panel(snapshot, history, spark_width, max_entries, theme) {

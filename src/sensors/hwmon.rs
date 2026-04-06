@@ -153,10 +153,10 @@ impl HwmonSource {
 
             // Apply voltage scaling multipliers from board template
             for entry in &mut entries {
-                if entry.category == SensorCategory::Voltage {
-                    if let Some(&mult) = effective_scaling.get(&entry.id.to_string()) {
-                        entry.multiplier = mult;
-                    }
+                if entry.category == SensorCategory::Voltage
+                    && let Some(&mult) = effective_scaling.get(&entry.id.to_string())
+                {
+                    entry.multiplier = mult;
                 }
             }
 

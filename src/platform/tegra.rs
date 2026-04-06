@@ -109,19 +109,19 @@ impl crate::sensors::SensorSource for DevfreqGpuSource {
             }
 
             // GPU load — devfreq reports 0-1000 (promille), divide by 10 for percent
-            if let Some(ref load_path) = gpu.load_path {
-                if let Some(raw) = sysfs::read_u64_optional(load_path) {
-                    let pct = raw as f64 / 10.0;
-                    readings.push((
-                        sid("tegra-gpu", chip, "load"),
-                        SensorReading::new(
-                            format!("{chip} Load"),
-                            pct,
-                            SensorUnit::Percent,
-                            SensorCategory::Utilization,
-                        ),
-                    ));
-                }
+            if let Some(ref load_path) = gpu.load_path
+                && let Some(raw) = sysfs::read_u64_optional(load_path)
+            {
+                let pct = raw as f64 / 10.0;
+                readings.push((
+                    sid("tegra-gpu", chip, "load"),
+                    SensorReading::new(
+                        format!("{chip} Load"),
+                        pct,
+                        SensorUnit::Percent,
+                        SensorCategory::Utilization,
+                    ),
+                ));
             }
 
             // Max frequency (static, cached from discovery)

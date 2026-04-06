@@ -6,7 +6,7 @@ Maintainer: Level1Techs Package Team <level1techspackageteam@gmail.com>
 #   cap_perfmon + cap_sys_rawio on the sio binary so sensors work without root.
 #   Also needed at build time because dh_fixperms strips capabilities and we
 #   must re-apply them before the .deb is assembled.
-Build-Depends: debhelper-compat (= 13), cargo, rustc (>= 1.85), libcap2-bin
+Build-Depends: debhelper-compat (= 13), cargo, rustc (>= 1.88), libcap2-bin
 Standards-Version: 4.6.2
 Homepage: https://github.com/level1techs/siomon
 Vcs-Git: https://github.com/level1techs/siomon.git

@@ -214,10 +214,10 @@ fn detect_interface(block_path: &Path) -> StorageInterface {
 
     // Check for virtio
     let driver = sysfs::read_link_basename(&dev_path.join("driver"));
-    if let Some(ref d) = driver {
-        if d.contains("virtio") {
-            return StorageInterface::VirtIO;
-        }
+    if let Some(ref d) = driver
+        && d.contains("virtio")
+    {
+        return StorageInterface::VirtIO;
     }
 
     // Check for MMC

@@ -622,10 +622,10 @@ fn parse_numa_meminfo(path: &Path) -> Option<u64> {
         if line.contains("MemTotal") {
             // Format: "Node X MemTotal:    12345 kB"
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4 {
-                if let Ok(kb) = parts[3].parse::<u64>() {
-                    return Some(kb * 1024);
-                }
+            if parts.len() >= 4
+                && let Ok(kb) = parts[3].parse::<u64>()
+            {
+                return Some(kb * 1024);
             }
         }
     }

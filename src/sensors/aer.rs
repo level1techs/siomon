@@ -132,19 +132,19 @@ fn resolve_pci_label(dev_dir: &std::path::Path, bdf: &str) -> String {
     let vid = sysfs::read_u64_optional(&dev_dir.join("vendor")).map(|v| v as u16);
     let did = sysfs::read_u64_optional(&dev_dir.join("device")).map(|v| v as u16);
 
-    if let (Some(vid), Some(did)) = (vid, did) {
-        if let Some(dev) = pci_ids::Device::from_vid_pid(vid, did) {
-            let name = dev.name();
-            let short = if name.len() > 40 {
-                match name.char_indices().nth(40) {
-                    Some((idx, _)) => &name[..idx],
-                    None => name,
-                }
-            } else {
-                name
-            };
-            return format!("{short} [{bdf}]");
-        }
+    if let (Some(vid), Some(did)) = (vid, did)
+        && let Some(dev) = pci_ids::Device::from_vid_pid(vid, did)
+    {
+        let name = dev.name();
+        let short = if name.len() > 40 {
+            match name.char_indices().nth(40) {
+                Some((idx, _)) => &name[..idx],
+                None => name,
+            }
+        } else {
+            name
+        };
+        return format!("{short} [{bdf}]");
     }
     bdf.to_string()
 }

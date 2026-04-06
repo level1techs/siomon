@@ -218,8 +218,8 @@ jobs:
             # Determine series-specific Rust packages
             case "$series" in
               noble)
-                RUST_PKGS="cargo-1.85, rustc-1.85"
-                CARGO_BIN="cargo-1.85"
+                RUST_PKGS="cargo-1.88, rustc-1.88"
+                CARGO_BIN="cargo-1.88"
                 ;;
               *)
                 RUST_PKGS="cargo, rustc"
@@ -234,7 +234,7 @@ jobs:
 
             # Copy debian/ from packaging templates. These are not used as-is:
             # changelog is overwritten below, and control/rules are sed-modified
-            # per series (e.g. Noble uses versioned cargo-1.85/rustc-1.85).
+            # per series (e.g. Noble uses versioned cargo-1.88/rustc-1.88).
             cp -r "$GITHUB_WORKSPACE/packaging/launchpad/debian" "$BUILD_DIR/debian"
 
             # Canonical udev/tmpfiles live in packaging/ — copy for debhelper
@@ -253,7 +253,7 @@ jobs:
             } > "$BUILD_DIR/debian/changelog"
 
             # Adjust Build-Depends for series (replace cargo/rustc, keep other deps)
-            sed -i "s/cargo, rustc (>= 1.85)/${RUST_PKGS}/" \
+            sed -i "s/cargo, rustc (>= 1.88)/${RUST_PKGS}/" \
               "$BUILD_DIR/debian/control"
 
             # Adjust cargo binary name in rules

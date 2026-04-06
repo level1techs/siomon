@@ -180,7 +180,7 @@ Fields requiring elevation show `[requires root]` or are omitted.
 
 ### Prerequisites
 
-- Rust 1.85+ (edition 2024)
+- Rust 1.88+ (edition 2024)
 - Linux (kernel 4.x+ for full sysfs support; 5.x+ recommended)
 - Standard build tools (`gcc` or `cc` for libc linking)
 

@@ -54,10 +54,10 @@ impl AlertEngine {
 
                 // Check cooldown
                 let key = format!("{}:{}", rule.sensor_pattern, id_str);
-                if let Some(last) = self.last_triggered.get(&key) {
-                    if now.duration_since(*last) < rule.cooldown {
-                        continue;
-                    }
+                if let Some(last) = self.last_triggered.get(&key)
+                    && now.duration_since(*last) < rule.cooldown
+                {
+                    continue;
                 }
 
                 self.last_triggered.insert(key, now);

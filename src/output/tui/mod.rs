@@ -497,10 +497,10 @@ fn run_loop(
                                 KeyCode::Up | KeyCode::Char('k') if view_mode == ViewMode::Tree => {
                                     if cursor > 0 {
                                         cursor -= 1;
-                                        if let Some(&row_idx) = group_indices.get(cursor) {
-                                            if row_idx < scroll_offset {
-                                                scroll_offset = row_idx;
-                                            }
+                                        if let Some(&row_idx) = group_indices.get(cursor)
+                                            && row_idx < scroll_offset
+                                        {
+                                            scroll_offset = row_idx;
                                         }
                                     }
                                 }
@@ -540,10 +540,10 @@ fn run_loop(
                                 KeyCode::PageUp if view_mode == ViewMode::Tree => {
                                     scroll_offset = scroll_offset.saturating_sub(20);
                                     while cursor > 0 {
-                                        if let Some(&ri) = group_indices.get(cursor) {
-                                            if ri >= scroll_offset {
-                                                break;
-                                            }
+                                        if let Some(&ri) = group_indices.get(cursor)
+                                            && ri >= scroll_offset
+                                        {
+                                            break;
                                         }
                                         cursor -= 1;
                                     }
@@ -551,10 +551,10 @@ fn run_loop(
                                 KeyCode::PageDown if view_mode == ViewMode::Tree => {
                                     scroll_offset = scroll_offset.saturating_add(20);
                                     while cursor + 1 < group_indices.len() {
-                                        if let Some(&ri) = group_indices.get(cursor) {
-                                            if ri >= scroll_offset {
-                                                break;
-                                            }
+                                        if let Some(&ri) = group_indices.get(cursor)
+                                            && ri >= scroll_offset
+                                        {
+                                            break;
                                         }
                                         cursor += 1;
                                     }

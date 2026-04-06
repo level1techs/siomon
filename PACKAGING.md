@@ -572,7 +572,7 @@ build fails:
 2. Common issues:
    - Missing build dependencies in `packaging/launchpad/debian/control`.
    - Rust version too old in the target series (the workflow handles noble
-     specially with `cargo-1.85`/`rustc-1.85`).
+     specially with `cargo-1.88`/`rustc-1.88`).
    - Vendored dependencies are incomplete — re-run the workflow (repack
      increments automatically).
 

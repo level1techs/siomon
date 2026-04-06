@@ -16,10 +16,10 @@ pub fn detect_color_level() -> ColorLevel {
     if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
         return ColorLevel::None;
     }
-    if let Ok(ct) = std::env::var("COLORTERM") {
-        if ct == "truecolor" || ct == "24bit" {
-            return ColorLevel::TrueColor;
-        }
+    if let Ok(ct) = std::env::var("COLORTERM")
+        && (ct == "truecolor" || ct == "24bit")
+    {
+        return ColorLevel::TrueColor;
     }
     if let Ok(term) = std::env::var("TERM") {
         if term == "dumb" {

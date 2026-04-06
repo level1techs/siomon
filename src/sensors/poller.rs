@@ -317,10 +317,10 @@ fn discover_all_sources(
         result.extend(join_or_log(h_hsmp.join(), "hsmp"));
         result.extend(join_or_log(h_ipmi.join(), "ipmi"));
 
-        if let Some(h) = h_direct_io {
-            if let Some(dio) = join_or_log(h.join(), "direct-io") {
-                result.extend(dio);
-            }
+        if let Some(h) = h_direct_io
+            && let Some(dio) = join_or_log(h.join(), "direct-io")
+        {
+            result.extend(dio);
         }
 
         result

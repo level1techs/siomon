@@ -300,18 +300,17 @@ fn parse_connector(s: &str) -> Option<(String, u32)> {
     ];
 
     for prefix in &known_types {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            if let Some(idx_str) = rest.strip_prefix('-') {
-                if let Ok(idx) = idx_str.parse::<u32>() {
-                    // Normalize HDMI-A/HDMI-B to HDMI
-                    let display_type = if prefix.starts_with("HDMI") {
-                        "HDMI".to_string()
-                    } else {
-                        prefix.to_string()
-                    };
-                    return Some((display_type, idx));
-                }
-            }
+        if let Some(rest) = s.strip_prefix(prefix)
+            && let Some(idx_str) = rest.strip_prefix('-')
+            && let Ok(idx) = idx_str.parse::<u32>()
+        {
+            // Normalize HDMI-A/HDMI-B to HDMI
+            let display_type = if prefix.starts_with("HDMI") {
+                "HDMI".to_string()
+            } else {
+                prefix.to_string()
+            };
+            return Some((display_type, idx));
         }
     }
     None
@@ -416,15 +415,14 @@ impl crate::collectors::Collector for GpuCollector {
 fn normalize_bus_addr(addr: &str) -> String {
     let s = addr.trim().to_lowercase();
     // If domain is 8 digits (e.g. "00000000:11:00.0"), truncate to 4
-    if s.len() > 12 {
-        if let Some(first_colon) = s.find(':') {
-            if first_colon > 4 {
-                let domain = &s[..first_colon];
-                // Take last 4 chars of domain
-                let short_domain = &domain[domain.len().saturating_sub(4)..];
-                return format!("{}{}", short_domain, &s[first_colon..]);
-            }
-        }
+    if s.len() > 12
+        && let Some(first_colon) = s.find(':')
+        && first_colon > 4
+    {
+        let domain = &s[..first_colon];
+        // Take last 4 chars of domain
+        let short_domain = &domain[domain.len().saturating_sub(4)..];
+        return format!("{}{}", short_domain, &s[first_colon..]);
     }
     s
 }
@@ -481,10 +479,9 @@ fn read_amd_max_sclk(path: &Path) -> Option<u32> {
                 .strip_suffix("Mhz")
                 .or_else(|| part.strip_suffix("MHz"))
                 .or_else(|| part.strip_suffix("mhz"))
+                && let Ok(mhz) = mhz_str.parse::<u32>()
             {
-                if let Ok(mhz) = mhz_str.parse::<u32>() {
-                    max_mhz = Some(max_mhz.map_or(mhz, |prev: u32| prev.max(mhz)));
-                }
+                max_mhz = Some(max_mhz.map_or(mhz, |prev: u32| prev.max(mhz)));
             }
         }
     }

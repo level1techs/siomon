@@ -109,13 +109,13 @@ impl Nct67xxSource {
     pub fn new(chip: SuperIoChip, label_overrides: &HashMap<String, String>) -> Self {
         let board_name = crate::db::sensor_labels::read_board_name();
         let hwm_access = HwmAccess::open(chip.hwm_base);
-        if let Some(ref access) = hwm_access {
-            if access.is_atomic() {
-                log::info!(
-                    "NCT67xx: using sinfo_io (atomic) for HWM base 0x{:04X}",
-                    chip.hwm_base
-                );
-            }
+        if let Some(ref access) = hwm_access
+            && access.is_atomic()
+        {
+            log::info!(
+                "NCT67xx: using sinfo_io (atomic) for HWM base 0x{:04X}",
+                chip.hwm_base
+            );
         }
         Self {
             chip,
