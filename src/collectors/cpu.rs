@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use crate::db::cpu_codenames;
@@ -52,10 +52,9 @@ pub fn collect() -> Result<Vec<CpuInfo>> {
         .or_else(|| arm_info.as_ref().map(|a| a.features.clone()))
         .unwrap_or_default();
 
-    let cache = cpuid_data
-        .as_ref()
-        .map(|c| c.cache.clone())
-        .unwrap_or_else(|| CpuCache {
+    let cache = gather_cache_sysfs()
+        .or_else(|| cpuid_data.as_ref().map(|c| c.cache.clone()))
+        .unwrap_or(CpuCache {
             l1d: None,
             l1i: None,
             l2: None,
@@ -510,6 +509,88 @@ fn parse_hex_or_dec(s: &str) -> Option<u32> {
 // ---------------------------------------------------------------------------
 // Topology from sysfs
 // ---------------------------------------------------------------------------
+
+fn gather_cache_sysfs() -> Option<CpuCache> {
+    let mut cache_map: BTreeMap<(u8, String), HashSet<String>> = BTreeMap::new();
+    let mut size_map: BTreeMap<(u8, String), u64> = BTreeMap::new();
+    let mut ways_map: BTreeMap<(u8, String), u32> = BTreeMap::new();
+    let mut line_map: BTreeMap<(u8, String), u32> = BTreeMap::new();
+    let mut sets_map: BTreeMap<(u8, String), u32> = BTreeMap::new();
+    let mut shared_map: BTreeMap<(u8, String), u32> = BTreeMap::new();
+
+    let cpu_dirs = sysfs::glob_paths("/sys/devices/system/cpu/cpu[0-9]*/cache/index*");
+    if cpu_dirs.is_empty() {
+        return None;
+    }
+
+    for dir in cpu_dirs {
+        let level = sysfs::read_u32_optional(&dir.join("level")).unwrap_or(0) as u8;
+        if level == 0 { continue; }
+        
+        let ctype = sysfs::read_string_optional(&dir.join("type")).unwrap_or_default();
+        if ctype.is_empty() { continue; }
+
+        let shared_list = sysfs::read_string_optional(&dir.join("shared_cpu_list")).unwrap_or_default();
+        if shared_list.is_empty() { continue; }
+
+        let key = (level, ctype.clone());
+
+        if !cache_map.entry(key.clone()).or_default().insert(shared_list.clone()) {
+            continue;
+        }
+
+        let size_str = sysfs::read_string_optional(&dir.join("size")).unwrap_or_default();
+        let size_bytes = if let Some(s) = size_str.strip_suffix('K') {
+            s.parse::<u64>().unwrap_or(0) * 1024
+        } else if let Some(s) = size_str.strip_suffix('M') {
+            s.parse::<u64>().unwrap_or(0) * 1024 * 1024
+        } else {
+            size_str.parse::<u64>().unwrap_or(0)
+        };
+
+        *size_map.entry(key.clone()).or_default() += size_bytes;
+
+        if !ways_map.contains_key(&key) {
+            if let Some(ways) = sysfs::read_u32_optional(&dir.join("ways_of_associativity")) {
+                ways_map.insert(key.clone(), ways);
+            }
+            if let Some(line) = sysfs::read_u32_optional(&dir.join("coherency_line_size")) {
+                line_map.insert(key.clone(), line);
+            }
+            if let Some(sets) = sysfs::read_u32_optional(&dir.join("number_of_sets")) {
+                sets_map.insert(key.clone(), sets);
+            }
+            let shared_by = count_cpulist_entries(&shared_list);
+            shared_map.insert(key.clone(), shared_by);
+        }
+    }
+
+    let mut l1d = None;
+    let mut l1i = None;
+    let mut l2 = None;
+    let mut l3 = None;
+
+    for ((level, ctype), instances_set) in cache_map {
+        let entry = CacheLevel {
+            level,
+            cache_type: ctype.clone(),
+            size_bytes: *size_map.get(&(level, ctype.clone())).unwrap_or(&0),
+            ways: *ways_map.get(&(level, ctype.clone())).unwrap_or(&0),
+            line_size_bytes: *line_map.get(&(level, ctype.clone())).unwrap_or(&0),
+            sets: sets_map.get(&(level, ctype.clone())).copied(),
+            shared_by_cores: shared_map.get(&(level, ctype.clone())).copied(),
+            instances: Some(instances_set.len() as u32),
+        };
+        match level {
+            1 if ctype == "Data" => l1d = Some(entry),
+            1 if ctype == "Instruction" => l1i = Some(entry),
+            2 => l2 = Some(entry),
+            3 => l3 = Some(entry),
+            _ => {}
+        }
+    }
+    Some(CpuCache { l1d, l1i, l2, l3 })
+}
 
 fn gather_topology() -> CpuTopology {
     let cpu_dirs = sysfs::glob_paths("/sys/devices/system/cpu/cpu[0-9]*");
