@@ -2,9 +2,9 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 
 // Linux I2C ioctl request codes (from <linux/i2c-dev.h>)
-const I2C_SLAVE: libc::c_ulong = 0x0703;
-const I2C_SLAVE_FORCE: libc::c_ulong = 0x0706;
-const I2C_SMBUS: libc::c_ulong = 0x0720;
+const I2C_SLAVE: libc::Ioctl = 0x0703;
+const I2C_SLAVE_FORCE: libc::Ioctl = 0x0706;
+const I2C_SMBUS: libc::Ioctl = 0x0720;
 
 // SMBus transfer direction
 const I2C_SMBUS_READ: u8 = 1;
