@@ -25,6 +25,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     // Buses 0 and 2 are bare Synopsys DesignWare adapters; bus 1 hosts
     // ACPI devices (ITE8800/MSFT8000) and is excluded from DDR5 probing.
     nct_voltage_scaling: Some(&voltage_scaling::ASUS_W890E_SAGE),
+    ite_voltage_scaling: None,
     dimm_labels: &[],
     ddr5_bus_config: Some(&Ddr5BusConfig {
         i2c_buses: &[0, 2],
