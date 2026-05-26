@@ -6,6 +6,9 @@
 //!
 //! Register layout from ITE register map and datasheets.
 
+use std::collections::HashMap;
+
+use crate::db::voltage_scaling::{self, VoltageChannel};
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::platform::port_io::PortIo;
 use crate::sensors::superio::chip_detect::{ChipType, SuperIoChip};
@@ -16,11 +19,6 @@ use crate::sensors::superio::chip_detect::{ChipType, SuperIoChip};
 // indicates they are configured as voltage inputs.
 const VOLTAGE_REGS_BASE: [u8; 10] = [0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2F];
 const VOLTAGE_REGS_SHARED: [u8; 3] = [0x2C, 0x2D, 0x2E]; // VIN10/11/12 aka TEMP4/5/6
-
-const VOLTAGE_LABELS: [&str; 13] = [
-    "VIN0", "VIN1", "VIN2", "AVCC", "VIN4", "VIN5", "VIN6", "VSB", "Vbat", "VIN9", "VIN10",
-    "VIN11", "VIN12",
-];
 
 // Channels with internal 2x scaling (voltage divider in the chip)
 const SCALED_CHANNELS: [usize; 4] = [3, 7, 8, 9];
@@ -51,11 +49,14 @@ const FAN6_REGS_IT8665: (u8, u8) = (0x94, 0x93);
 
 const FAN_LABELS: [&str; 6] = ["Fan 1", "Fan 2", "Fan 3", "Fan 4", "Fan 5", "Fan 6"];
 
-// RPM calculation constant (same as Nuvoton)
+// RPM calculation constant (same as Nuvoton and Linux it87 driver)
 const FAN_RPM_FACTOR: u32 = 1_350_000;
 
-// 16-bit fan enable register
-const REG_FAN_16BIT: u8 = 0x0C;
+// Fan divisor register (per Linux it87 driver, IT87_REG_FAN_DIV = 0x0B)
+// Encoding: bits [2:0] = Fan 1 divisor code, [5:3] = Fan 2 divisor code,
+//           bit [6] = Fan 3 divisor (0→1, 1→3)
+// Divisor = BIT(code), i.e. 0→1, 1→2, 2→4, 3→8, etc.
+const REG_FAN_DIV: u8 = 0x0B;
 
 pub struct Ite87xxSource {
     chip: SuperIoChip,
@@ -63,6 +64,10 @@ pub struct Ite87xxSource {
     data_port: u16,
     /// ADC millivolts per LSB — varies by chip family.
     adc_mv: f64,
+    /// Board-specific label overrides.
+    label_overrides: HashMap<String, String>,
+    /// Board name for voltage scaling lookup.
+    board_name: Option<String>,
 }
 
 /// ADC millivolts per LSB, per chip family.
@@ -76,15 +81,21 @@ fn adc_mv_per_lsb(chip: ChipType) -> f64 {
 }
 
 impl Ite87xxSource {
-    pub fn new(chip: SuperIoChip) -> Self {
+    pub fn new(
+        chip: SuperIoChip,
+        label_overrides: HashMap<String, String>,
+    ) -> Self {
         let addr_port = chip.hwm_base + 5;
         let data_port = chip.hwm_base + 6;
         let adc_mv = adc_mv_per_lsb(chip.chip);
+        let board_name = crate::db::sensor_labels::read_board_name();
         Self {
             chip,
             addr_port,
             data_port,
             adc_mv,
+            label_overrides,
+            board_name,
         }
     }
 
@@ -163,12 +174,23 @@ impl Ite87xxSource {
         let mut readings = Vec::new();
         let chip_name = format!("{}", self.chip.chip).to_lowercase();
 
+        // Look up board-specific ITE voltage scaling
+        let voltage_config = voltage_scaling::lookup_ite87xx(self.board_name.as_deref())
+            .unwrap_or_else(voltage_scaling::default_ite87xx);
+
         // Probe shared register mode once per poll cycle
         let shared_is_voltage = self.probe_shared_regs(&mut pio);
 
-        self.read_voltages(&mut pio, &chip_name, &shared_is_voltage, &mut readings);
+        self.read_voltages(&mut pio, &chip_name, &shared_is_voltage, voltage_config, &mut readings);
         self.read_temperatures(&mut pio, &chip_name, &shared_is_voltage, &mut readings);
         self.read_fans(&mut pio, &chip_name, &mut readings);
+
+        // Apply label overrides
+        for (id, reading) in &mut readings {
+            if let Some(label) = self.label_overrides.get(&id.to_string()) {
+                reading.label = label.clone();
+            }
+        }
 
         readings
     }
@@ -200,6 +222,7 @@ impl Ite87xxSource {
         chip_name: &str,
         idx: usize,
         reg: u8,
+        voltage_config: &[VoltageChannel; 13],
         readings: &mut Vec<(SensorId, SensorReading)>,
     ) {
         let Some(raw) = self.read_reg(pio, reg) else {
@@ -216,6 +239,9 @@ impl Ite87xxSource {
             mv *= 2.0;
         }
 
+        // Apply board-specific external divider multiplier
+        mv *= voltage_config[idx].multiplier;
+
         let id = SensorId {
             source: "superio".into(),
             chip: chip_name.into(),
@@ -224,7 +250,7 @@ impl Ite87xxSource {
         readings.push((
             id,
             SensorReading::new(
-                VOLTAGE_LABELS[idx].to_string(),
+                voltage_config[idx].label.to_string(),
                 mv / 1000.0,
                 SensorUnit::Volts,
                 SensorCategory::Voltage,
@@ -237,17 +263,18 @@ impl Ite87xxSource {
         pio: &mut PortIo,
         chip_name: &str,
         shared_is_voltage: &[bool; 3],
+        voltage_config: &[VoltageChannel; 13],
         readings: &mut Vec<(SensorId, SensorReading)>,
     ) {
         // Always read base voltage channels (VIN0-VIN9)
         for (i, &reg) in VOLTAGE_REGS_BASE.iter().enumerate() {
-            self.read_voltage(pio, chip_name, i, reg, readings);
+            self.read_voltage(pio, chip_name, i, reg, voltage_config, readings);
         }
 
         // Only read VIN10-12 when the shared registers are in voltage mode
         for (j, &reg) in VOLTAGE_REGS_SHARED.iter().enumerate() {
             if shared_is_voltage[j] {
-                self.read_voltage(pio, chip_name, 10 + j, reg, readings);
+                self.read_voltage(pio, chip_name, 10 + j, reg, voltage_config, readings);
             }
         }
     }
@@ -312,7 +339,26 @@ impl Ite87xxSource {
         chip_name: &str,
         readings: &mut Vec<(SensorId, SensorReading)>,
     ) {
-        let fan16_enable = self.read_reg(pio, REG_FAN_16BIT).unwrap_or(0);
+        // Read divisor register (Linux it87 driver: IT87_REG_FAN_DIV = 0x0B)
+        // Encoding: bits [2:0] = Fan 1, [5:3] = Fan 2, bit [6] = Fan 3
+        // Divisor = BIT(code), i.e. 0→1, 1→2, 2→4, 3→8, ...
+        let div_reg = self.read_reg(pio, REG_FAN_DIV).unwrap_or(0);
+        let fan_div = [
+            1u32 << (div_reg & 0x07),
+            1u32 << ((div_reg >> 3) & 0x07),
+            if (div_reg & 0x40) != 0 { 3 } else { 1 },
+            1, 1, 1, // Fans 4-6: divisor not used in 16-bit mode
+        ];
+
+        // Determine if this chip uses 16-bit fan counters (FEAT_16BIT_FANS
+        // in the Linux it87 driver). All modern ITE chips use 16-bit mode:
+        // IT8686, IT8688, IT8689, IT8628, IT8665, IT8696, IT87952E.
+        // Older chips (IT8655, IT8792, IT8613) use 8-bit mode with divisors.
+        let all_16bit = !matches!(
+            self.chip.chip,
+            ChipType::Ite8655 | ChipType::Ite8792 | ChipType::Ite8613
+        );
+
         let num_base = self.num_base_fans();
 
         // Base fans (1-5) + optional fan 6 without heap allocation
@@ -330,19 +376,34 @@ impl Ite87xxSource {
                 continue;
             }
 
-            let use_16bit = (fan16_enable & (1 << idx)) != 0 || idx >= 3;
-            let count = if use_16bit {
-                let lo = self.read_reg(pio, fanx_reg).unwrap_or(0) as u16;
-                let hi = self.read_reg(pio, fan_reg).unwrap_or(0) as u16;
-                (hi << 8) | lo
-            } else {
-                self.read_reg(pio, fan_reg).unwrap_or(0) as u16
-            };
+            // ITE fan register layout (13-bit count):
+            //   FAN register (fan_reg)  = bits 7:0  (lower 8 bits)
+            //   FANX register (fanx_reg) = bits 12:8 (upper 5 bits)
+            // 16-bit count = (FANX << 8) | FAN
+            //
+            // Always read both registers.
+            let fan_val = self.read_reg(pio, fan_reg).unwrap_or(0) as u16;
+            let fanx_val = self.read_reg(pio, fanx_reg).unwrap_or(0) as u16;
+            let count = (fanx_val << 8) | fan_val;
 
-            let rpm = if count == 0 || count == 0xFFFF {
-                0.0
+            // RPM formula per Linux it87 driver:
+            //   16-bit mode: RPM = 1350000 / (count * 2)
+            //     count=0xFFFF → 0 RPM (disconnected)
+            //   8-bit mode:  RPM = 1350000 / (count * divisor)
+            //     count=0xFF → 0 RPM (disconnected), count=0 → -1 (skip)
+            let rpm = if all_16bit {
+                if count == 0 || count == 0xFFFF {
+                    0.0
+                } else {
+                    FAN_RPM_FACTOR as f64 / (count as f64 * 2.0)
+                }
             } else {
-                (FAN_RPM_FACTOR / count as u32) as f64
+                let divisor = fan_div.get(idx).copied().unwrap_or(1);
+                if count == 0 || fan_val == 0xFF {
+                    0.0
+                } else {
+                    FAN_RPM_FACTOR as f64 / (count as f64 * divisor as f64)
+                }
             };
 
             let id = SensorId {
@@ -416,18 +477,25 @@ mod tests {
     }
 
     #[test]
-    fn test_fan_rpm() {
+    fn test_fan_rpm_16bit() {
+        // 16-bit mode: RPM = 1350000 / (count * 2)
         let count = 675u32;
-        let rpm = FAN_RPM_FACTOR / count;
-        assert_eq!(rpm, 2000);
+        let rpm = FAN_RPM_FACTOR as f64 / (count as f64 * 2.0);
+        assert!((rpm - 1000.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_fan_rpm_8bit() {
+        // 8-bit mode with divisor=1: RPM = 1350000 / count
+        let count = 675u32;
+        let rpm = FAN_RPM_FACTOR as f64 / count as f64;
+        assert!((rpm - 2000.0).abs() < 0.1);
     }
 
     #[test]
     fn test_register_counts() {
-        assert_eq!(
-            VOLTAGE_REGS_BASE.len() + VOLTAGE_REGS_SHARED.len(),
-            VOLTAGE_LABELS.len()
-        );
+        // 10 base + 3 shared = 13 voltage inputs
+        assert_eq!(VOLTAGE_REGS_BASE.len() + VOLTAGE_REGS_SHARED.len(), 13);
         assert_eq!(
             TEMP_REGS_BASE.len() + TEMP_REGS_SHARED.len(),
             TEMP_LABELS.len()

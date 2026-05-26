@@ -111,6 +111,8 @@ pub struct BoardTemplate {
     pub base_labels: Option<&'static [(&'static str, &'static str)]>,
     /// NCT6798/6799 voltage scaling table (18 channels).
     pub nct_voltage_scaling: Option<&'static [VoltageChannel; 18]>,
+    /// ITE87xx voltage scaling table (13 channels: VIN0-VIN12).
+    pub ite_voltage_scaling: Option<&'static [VoltageChannel; 13]>,
     /// DIMM slot topology mapping EDAC ranks to physical slot names.
     pub dimm_labels: &'static [DimmSlotLabel],
     /// DDR5 I2C bus topology for direct SPD/temperature probing.
@@ -880,6 +882,7 @@ mod tests {
             ]),
             sensor_labels: &[("hwmon/nct6798/fan1", "My Fan")],
             nct_voltage_scaling: None,
+            ite_voltage_scaling: None,
             dimm_labels: &[],
             ddr5_bus_config: None,
             requirements: FeatureRequirements::NONE,
@@ -905,6 +908,7 @@ mod tests {
             base_labels: None,
             sensor_labels: &[("hwmon/nct6798/in0", "Vcore")],
             nct_voltage_scaling: None,
+            ite_voltage_scaling: None,
             dimm_labels: &[],
             ddr5_bus_config: None,
             requirements: FeatureRequirements::NONE,

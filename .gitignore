@@ -1,6 +1,7 @@
 /target
 progress.md
 re_data/
+bios/
 
 # Credential files
 *.pass

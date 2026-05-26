@@ -52,6 +52,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     ],
 
     nct_voltage_scaling: Some(&voltage_scaling::ASUS_TRX50_SAGE),
+    ite_voltage_scaling: None,
     dimm_labels: &[],
     // DDR5 direct probing: I2C buses 0 and 1 are DesignWare controllers
     // connected to DIMM slots. Enables SPD EEPROM reads and per-DIMM

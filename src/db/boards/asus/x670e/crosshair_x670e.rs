@@ -15,6 +15,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     sensor_labels: &[("hwmon/nct6798/fan2", "CPU OPT")],
 
     nct_voltage_scaling: Some(&voltage_scaling::ASUS_AM5_NCT6798),
+    ite_voltage_scaling: None,
     dimm_labels: &[],
     ddr5_bus_config: None,
     requirements: FeatureRequirements::NONE,

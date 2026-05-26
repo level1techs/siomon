@@ -14,6 +14,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     sensor_labels: GIGABYTE_IT8792_LABELS,
 
     nct_voltage_scaling: None,
+    ite_voltage_scaling: None,
     dimm_labels: &[],
     ddr5_bus_config: None,
     requirements: FeatureRequirements::NONE,

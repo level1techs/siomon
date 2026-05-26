@@ -17,6 +17,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     ],
 
     nct_voltage_scaling: None,
+    ite_voltage_scaling: None,
     dimm_labels: &[],
     ddr5_bus_config: None,
     requirements: FeatureRequirements::NONE,

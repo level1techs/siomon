@@ -18,6 +18,7 @@ pub static BOARD_X670: BoardTemplate = BoardTemplate {
 
     // No board-specific voltage scaling known
     nct_voltage_scaling: None,
+    ite_voltage_scaling: None,
     dimm_labels: &[],
     ddr5_bus_config: None,
     requirements: FeatureRequirements::NONE,
@@ -38,6 +39,7 @@ pub static BOARD_B650: BoardTemplate = BoardTemplate {
 
     // No board-specific voltage scaling known
     nct_voltage_scaling: None,
+    ite_voltage_scaling: None,
     dimm_labels: &[],
     ddr5_bus_config: None,
     requirements: FeatureRequirements::NONE,

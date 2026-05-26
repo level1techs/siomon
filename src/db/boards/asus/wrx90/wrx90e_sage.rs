@@ -36,6 +36,7 @@ pub static BOARD: BoardTemplate = BoardTemplate {
     ],
 
     nct_voltage_scaling: Some(&voltage_scaling::ASUS_WRX90E_SAGE),
+    ite_voltage_scaling: None,
 
     // 8-channel DDR5, dual-rank 96GB DIMMs (16 ranks total)
     // Rank numbering is non-contiguous: csrow0 = channels 0,2,3,5,6,8,9,11

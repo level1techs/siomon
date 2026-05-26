@@ -22,6 +22,7 @@ pub static BOARD_X670: BoardTemplate = BoardTemplate {
     sensor_labels: STRIX_LABELS,
 
     nct_voltage_scaling: Some(&voltage_scaling::ASUS_AM5_NCT6798),
+    ite_voltage_scaling: None,
     dimm_labels: &[],
     ddr5_bus_config: None,
     requirements: FeatureRequirements::NONE,
@@ -41,6 +42,7 @@ pub static BOARD_B650: BoardTemplate = BoardTemplate {
     sensor_labels: STRIX_LABELS,
 
     nct_voltage_scaling: Some(&voltage_scaling::ASUS_AM5_NCT6798),
+    ite_voltage_scaling: None,
     dimm_labels: &[],
     ddr5_bus_config: None,
     requirements: FeatureRequirements::NONE,
