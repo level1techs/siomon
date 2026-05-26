@@ -114,19 +114,19 @@ static DEFAULT_ITE87XX: [VoltageChannel; 13] = [
 //   → external multiplier 4.93 / 4.0 = 1.2325
 // ---------------------------------------------------------------------------
 pub static GIGABYTE_TRX50_AI_TOP_ITE: [VoltageChannel; 13] = [
-    VoltageChannel::direct("Vcore"),     // VIN0: CPU core (~1.4V)
-    VoltageChannel::new("+3.3V", 1.65),  // VIN1: +3.3V rail
-    VoltageChannel::new("+12V", 6.0),    // VIN2: +12V rail
-    VoltageChannel::new("+5V", 1.2325),  // VIN3: +5V rail (AVCC, internal 2x + ext divider)
-    VoltageChannel::direct("Vcore SoC"), // VIN4: SoC voltage
-    VoltageChannel::direct("CPU VDDP"),  // VIN5: CPU VDDP
-    VoltageChannel::direct("DRAM"),      // VIN6: DRAM voltage
+    VoltageChannel::direct("Vcore"),         // VIN0: CPU core (~1.4V)
+    VoltageChannel::new("+3.3V", 1.65),      // VIN1: +3.3V rail
+    VoltageChannel::new("+12V", 6.0),        // VIN2: +12V rail
+    VoltageChannel::new("+5V", 1.2325),      // VIN3: +5V rail (AVCC, internal 2x + ext divider)
+    VoltageChannel::direct("Vcore SoC"),     // VIN4: SoC voltage
+    VoltageChannel::direct("CPU VDDP"),      // VIN5: CPU VDDP
+    VoltageChannel::direct("DRAM"),          // VIN6: DRAM voltage
     VoltageChannel::direct("+3.3V Standby"), // VIN7: +3.3V standby (internal 2x)
-    VoltageChannel::direct("Vbat"),      // VIN8: CMOS battery (internal 2x)
-    VoltageChannel::direct("VIN9"),      // VIN9
-    VoltageChannel::direct("VIN10"),     // VIN10
-    VoltageChannel::direct("VIN11"),     // VIN11
-    VoltageChannel::direct("VIN12"),     // VIN12
+    VoltageChannel::direct("Vbat"),          // VIN8: CMOS battery (internal 2x)
+    VoltageChannel::direct("VIN9"),          // VIN9
+    VoltageChannel::direct("VIN10"),         // VIN10
+    VoltageChannel::direct("VIN11"),         // VIN11
+    VoltageChannel::direct("VIN12"),         // VIN12
 ];
 
 // ---------------------------------------------------------------------------

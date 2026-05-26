@@ -81,10 +81,7 @@ fn adc_mv_per_lsb(chip: ChipType) -> f64 {
 }
 
 impl Ite87xxSource {
-    pub fn new(
-        chip: SuperIoChip,
-        label_overrides: HashMap<String, String>,
-    ) -> Self {
+    pub fn new(chip: SuperIoChip, label_overrides: HashMap<String, String>) -> Self {
         let addr_port = chip.hwm_base + 5;
         let data_port = chip.hwm_base + 6;
         let adc_mv = adc_mv_per_lsb(chip.chip);
@@ -181,7 +178,13 @@ impl Ite87xxSource {
         // Probe shared register mode once per poll cycle
         let shared_is_voltage = self.probe_shared_regs(&mut pio);
 
-        self.read_voltages(&mut pio, &chip_name, &shared_is_voltage, voltage_config, &mut readings);
+        self.read_voltages(
+            &mut pio,
+            &chip_name,
+            &shared_is_voltage,
+            voltage_config,
+            &mut readings,
+        );
         self.read_temperatures(&mut pio, &chip_name, &shared_is_voltage, &mut readings);
         self.read_fans(&mut pio, &chip_name, &mut readings);
 
@@ -347,7 +350,9 @@ impl Ite87xxSource {
             1u32 << (div_reg & 0x07),
             1u32 << ((div_reg >> 3) & 0x07),
             if (div_reg & 0x40) != 0 { 3 } else { 1 },
-            1, 1, 1, // Fans 4-6: divisor not used in 16-bit mode
+            1,
+            1,
+            1, // Fans 4-6: divisor not used in 16-bit mode
         ];
 
         // Determine if this chip uses 16-bit fan counters (FEAT_16BIT_FANS

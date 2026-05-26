@@ -261,10 +261,7 @@ fn discover_all_sources(
                         dio_sources.push(Box::new(nct_s));
                         continue;
                     }
-                    let ite_s = superio::ite87xx::Ite87xxSource::new(
-                        chip,
-                        label_overrides.clone(),
-                    );
+                    let ite_s = superio::ite87xx::Ite87xxSource::new(chip, label_overrides.clone());
                     if ite_s.is_supported() {
                         ite_count += 1;
                         dio_sources.push(Box::new(ite_s));

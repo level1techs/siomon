@@ -1,6 +1,4 @@
-use crate::db::boards::{
-    BoardTemplate, Ddr5BusConfig, FeatureRequirements, HwmonConfig, Platform,
-};
+use crate::db::boards::{BoardTemplate, Ddr5BusConfig, FeatureRequirements, HwmonConfig, Platform};
 use crate::db::voltage_scaling;
 
 pub static BOARD: BoardTemplate = BoardTemplate {
