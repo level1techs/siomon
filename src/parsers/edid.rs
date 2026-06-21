@@ -14,7 +14,7 @@ pub struct EdidInfo {
 }
 
 /// Parse an EDID blob from a DRM connector sysfs path.
-/// Returns None if the file is missing, empty, or unparseable.
+/// Returns None if the file is missing, empty, or unparsable.
 pub fn parse_from_drm(connector_path: &std::path::Path) -> Option<EdidInfo> {
     let edid_path = connector_path.join("edid");
     let data = std::fs::read(&edid_path).ok()?;

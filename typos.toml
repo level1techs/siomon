@@ -1,0 +1,16 @@
+[default]
+
+[default.extend-words]
+AER = "AER"
+pn = "pn"
+IIN = "IIN"
+synopsys = "synopsys"
+Ded = "Ded"
+MCH = "MCH"
+HDA = "HDA"
+ue = "ue"
+BYT = "BYT"
+BLOK = "BLOK"
+BA = "BA"
+ratatui = "ratatui"
+temprature = "temprature"
