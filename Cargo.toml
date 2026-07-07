@@ -28,7 +28,7 @@ csv = ["dep:csv"]
 raw-cpuid = "11"
 
 [workspace]
-members = [".", "xtask"]
+members = ["."]
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive", "env", "string"] }
