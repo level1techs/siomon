@@ -1,5 +1,6 @@
 use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::platform::sysfs::{self, CachedFile};
+use std::path::Path;
 use std::time::Instant;
 
 pub struct RaplSource {
@@ -14,18 +15,34 @@ struct RaplDomain {
     prev_time: Instant,
 }
 
+fn parse_domain(dir: &Path) -> Option<String> {
+    Some(
+        dir.to_str()?
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>(),
+    )
+}
+
 impl RaplSource {
     pub fn discover() -> Self {
         let mut domains = Vec::new();
 
         for dir in sysfs::glob_paths("/sys/class/powercap/intel-rapl:*") {
-            // Skip sub-domains like intel-rapl:0:1 at top level; we enumerate them
-            // separately via the glob which catches all levels.
+            // RAPL subdomains like intel-rapl:0:1 are included in the glob;
+            // in case the name of the subdomain does not have a distinctive number like `dram-0` a number will get added based on the RAPL domain.
             let name_path = dir.join("name");
-            let name = match sysfs::read_string_optional(&name_path) {
+            let mut name = match sysfs::read_string_optional(&name_path) {
                 Some(n) => n,
                 None => continue,
             };
+
+            if !name.chars().any(|c| c.is_ascii_digit())
+                && let Some(rapl_domain) = parse_domain(&dir)
+            {
+                name = format!("{name}-{rapl_domain}");
+            }
 
             let energy_path = dir.join("energy_uj");
             let max_path = dir.join("max_energy_range_uj");
