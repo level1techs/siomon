@@ -291,7 +291,7 @@ fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
 
 /// Read a non-zero u16 value; returns `None` for 0 or 0xFFFF (unknown).
 fn read_u16_nonzero(data: &[u8], offset: usize) -> Option<u16> {
-    read_u16_le(data, offset).and_then(|v| if v == 0 || v == 0xFFFF { None } else { Some(v) })
+    read_u16_le(data, offset).filter(|&v| !(v == 0 || v == 0xFFFF))
 }
 
 // ---------------------------------------------------------------------------

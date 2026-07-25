@@ -111,13 +111,13 @@ struct CpuidData {
 fn gather_cpuid() -> Option<CpuidData> {
     let cpuid = raw_cpuid::CpuId::new();
 
-    let vendor = match cpuid.get_vendor_info() {
-        Some(v) => match v.as_str() {
+    let vendor = {
+        let v = cpuid.get_vendor_info()?;
+        match v.as_str() {
             "GenuineIntel" => CpuVendor::Intel,
             "AuthenticAMD" => CpuVendor::Amd,
             other => CpuVendor::Unknown(other.to_string()),
-        },
-        None => return None,
+        }
     };
 
     let brand = cpuid
