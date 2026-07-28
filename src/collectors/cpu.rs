@@ -605,10 +605,18 @@ fn gather_numa_nodes() -> Vec<NumaNode> {
         // Read NUMA node memory from its meminfo file.
         let memory_bytes = parse_numa_meminfo(&dir.join("meminfo"));
 
+        // Each field corresponds the distance to the numa node with the appropriate index
+        let distances = sysfs::read_string_optional(&dir.join("distance"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect::<Vec<u32>>();
+
         nodes.push(NumaNode {
             node_id,
             cpu_list,
             memory_bytes,
+            distances,
         });
     }
 
