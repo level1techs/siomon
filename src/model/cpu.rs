@@ -56,6 +56,7 @@ pub struct NumaNode {
     pub node_id: u32,
     pub cpu_list: String,
     pub memory_bytes: Option<u64>,
+    pub distances: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
