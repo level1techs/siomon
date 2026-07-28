@@ -10,6 +10,8 @@ pub mod db;
 pub mod error;
 /// Shared data structures for hardware and sensor information.
 pub mod model;
+/// Clap argument definitions (shared with build.rs via include!).
+mod opts;
 /// Output formatters (text, JSON, XML, HTML, CSV) and the TUI dashboard.
 pub mod output;
 /// Binary format parsers (SMBIOS, EDID).

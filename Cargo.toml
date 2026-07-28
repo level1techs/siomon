@@ -8,6 +8,7 @@ license = "MIT"
 keywords = ["hardware", "sensors", "hwmon", "system-info", "monitoring"]
 categories = ["command-line-utilities", "hardware-support"]
 repository = "https://github.com/level1techs/siomon"
+build = "build.rs"
 exclude = ["packaging/", "assets/", "kmod/", ".github/", "CONTRIBUTING.md", "PACKAGING.md", "cliff.toml"]
 
 [[bin]]
@@ -28,11 +29,15 @@ csv = ["dep:csv"]
 raw-cpuid = "11"
 
 [workspace]
-members = [".", "xtask"]
+members = ["."]
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive", "env", "string"] }
 clap_complete = "4"
+
+[build-dependencies]
+clap.workspace = true
+clap_complete.workspace = true
 
 
 [dependencies]

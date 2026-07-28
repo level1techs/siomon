@@ -11,9 +11,6 @@ override_dh_auto_configure:
 
 override_dh_auto_build:
 	cargo build --frozen --release --all-features
-	cargo run --frozen --package xtask -- shell-completion bash > target/sio.bash
-	cargo run --frozen --package xtask -- shell-completion zsh > target/sio.zsh
-	cargo run --frozen --package xtask -- shell-completion fish > target/sio.fish
 
 # Tests require hardware/sysfs interfaces not available in Launchpad build chroot
 override_dh_auto_test:
@@ -21,7 +18,7 @@ override_dh_auto_test:
 override_dh_auto_install:
 	install -D -m 0755 target/release/sio debian/siomon/usr/bin/sio
 	install -D -m 0644 target/sio.bash debian/siomon/usr/share/bash-completion/completions/sio
-	install -D -m 0644 target/sio.zsh debian/siomon/usr/share/zsh/vendor-completions/_sio
+	install -D -m 0644 target/_sio debian/siomon/usr/share/zsh/vendor-completions/_sio
 	install -D -m 0644 target/sio.fish debian/siomon/usr/share/fish/vendor_completions.d/sio.fish
 
 override_dh_auto_clean:
