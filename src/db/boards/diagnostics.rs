@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn min_bios_version_unparseable() {
+    fn min_bios_version_unparsable() {
         let reqs = [Requirement::MinBiosVersion {
             version: 1317,
             hint: "Update BIOS.",

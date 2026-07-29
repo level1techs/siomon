@@ -285,7 +285,7 @@ fn map_sensor_type(ty: &SensorType) -> Option<(SensorCategory, SensorUnit)> {
 #[allow(dead_code)]
 fn refine_unit(ipmi_unit: &Unit) -> Option<SensorUnit> {
     match ipmi_unit {
-        Unit::DegreesCelcius => Some(SensorUnit::Celsius),
+        Unit::DegreesCelsius => Some(SensorUnit::Celsius),
         Unit::Volt => Some(SensorUnit::Volts),
         Unit::Amp => Some(SensorUnit::Amps),
         Unit::Watt => Some(SensorUnit::Watts),

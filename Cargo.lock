@@ -773,19 +773,19 @@ dependencies = [
 
 [[package]]
 name = "ipmi-rs"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f027c37b60209bab91b78dc48af3a534255993efc6f3bedacf32f8d7480229c1"
+checksum = "ff183b5b6e52153a6750a378a920f808b108ddf830c6411491c2b2e76ef6847e"
 dependencies = [
  "aes",
  "bitflags 1.3.2",
  "cbc",
- "getrandom 0.2.17",
+ "getrandom 0.4.2",
  "hmac",
  "ipmi-rs-core",
  "log",
  "md5",
- "nix 0.26.4",
+ "nix 0.30.1",
  "nonmax",
  "rand",
  "sha1",
@@ -793,9 +793,9 @@ dependencies = [
 
 [[package]]
 name = "ipmi-rs-core"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a730b9e629a2bdd4f278afc8672d20dcfaccc4a1cb3545c6126639ec80b4022"
+checksum = "a2dd1b1e749c89affd95b9667995e19a8f16c6a72c668a484d47ce964770bc2d"
 dependencies = [
  "bitflags 1.3.2",
  "log",
@@ -960,9 +960,9 @@ dependencies = [
 
 [[package]]
 name = "md5"
-version = "0.7.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
+checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 
 [[package]]
 name = "memchr"
@@ -1005,17 +1005,6 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.26.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
-dependencies = [
- "bitflags 1.3.2",
- "cfg-if",
- "libc",
-]
-
-[[package]]
-name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
@@ -1025,6 +1014,18 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "memoffset",
+]
+
+[[package]]
+name = "nix"
+version = "0.30.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
+dependencies = [
+ "bitflags 2.11.0",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
