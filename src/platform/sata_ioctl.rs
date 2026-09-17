@@ -132,7 +132,7 @@ fn build_smart_read_cdb() -> [u8; 12] {
     [
         0xA1, // ATA PASS-THROUGH(12) opcode
         0x08, // protocol: PIO Data-In (4 << 1)
-        0x2E, // T_DIR=1 (from device), BYT_BLOK=1, T_LENGTH=2 (sectors)
+        0x0E, // CK_COND=0, T_DIR=1 (from device), BYT_BLOK=1, T_LENGTH=2 (sectors)
         0xD0, // feature: SMART READ DATA
         0x01, // sector count: 1
         0x00, // LBA low
