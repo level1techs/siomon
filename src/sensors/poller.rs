@@ -275,6 +275,11 @@ fn discover_all_sources(
                     );
                 }
 
+                // Intel MCHBAR MMIO (host-bridge gated inside)
+                dio_sources.push(Box::new(
+                    crate::sensors::intel_mchbar::IntelMchbarSource::discover(),
+                ));
+
                 let buses = crate::sensors::i2c::bus_scan::enumerate_smbus_adapters();
                 dio_sources.push(Box::new(
                     crate::sensors::i2c::spd5118::Spd5118Source::discover(board, &buses),

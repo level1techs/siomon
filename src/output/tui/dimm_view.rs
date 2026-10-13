@@ -1,7 +1,9 @@
 //! Dedicated DIMM information view for the TUI.
 //!
 //! Shows per-DIMM SPD data (timings, manufacturer, density) alongside
-//! live temperatures from Hub/TS0/TS1 sensors with sparklines.
+//! live temperatures from Hub/TS0/TS1 sensors with sparklines, and the
+//! memory controller's trained configuration when it was read
+//! (`--direct-io` on supported Intel platforms).
 
 use std::io::{self, Stdout};
 
@@ -12,7 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 
-use crate::model::memory::MemoryInfo;
+use crate::model::memory::{MemoryControllerInfo, MemoryInfo};
 use crate::model::sensor::{SensorId, SensorReading};
 
 use super::theme::TuiTheme;
@@ -41,8 +43,13 @@ pub fn render(
         // Header
         let dimm_count = memory_info.dimms.len();
         let total_gb = memory_info.total_bytes / (1024 * 1024 * 1024);
+        let trained = memory_info
+            .controller
+            .as_ref()
+            .map(|mc| format!(" | {}", mode_summary(mc)))
+            .unwrap_or_default();
         let header = Paragraph::new(format!(
-            " DDR5 DIMM Details | {dimm_count} DIMMs | {total_gb} GB | {elapsed_str}"
+            " DDR5 DIMM Details | {dimm_count} DIMMs | {total_gb} GB{trained} | {elapsed_str}"
         ))
         .style(theme.accent_style())
         .block(
@@ -57,8 +64,38 @@ pub fn render(
             .style(theme.status_style());
         frame.render_widget(status, outer[2]);
 
-        // Main content area
-        let main_area = outer[1];
+        // Main content area: DIMM table, then the trained controller panel
+        let controller = controller_lines(memory_info.controller.as_ref(), theme);
+        // Size the table to its rows (header + borders) so the controller
+        // panel sits right under it.
+        let table_height = if memory_info.dimms.is_empty() {
+            1
+        } else {
+            memory_info.dimms.len() as u16 + 3
+        };
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(table_height),
+                Constraint::Length(controller.len() as u16 + 2),
+                Constraint::Min(0),
+            ])
+            .split(outer[1]);
+        let main_area = split[0];
+        if !controller.is_empty() {
+            let title = memory_info
+                .controller
+                .as_ref()
+                .map(|mc| format!(" Memory Controller, trained ({}) ", mc.source))
+                .unwrap_or_else(|| " Memory Controller ".into());
+            let panel = Paragraph::new(controller).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme.border_style())
+                    .title(title),
+            );
+            frame.render_widget(panel, split[1]);
+        }
 
         if memory_info.dimms.is_empty() {
             let msg = Paragraph::new(" No DIMM data available").style(theme.label_style());
@@ -262,6 +299,117 @@ pub fn render(
     Ok(())
 }
 
+/// One-line mode summary, e.g. "DDR5-7200 Gear 2 2N 36-44-44-96".
+fn mode_summary(mc: &MemoryControllerInfo) -> String {
+    let t = &mc.timings;
+    let rate = mc
+        .data_rate_mts
+        .map(|r| format!("DDR5-{r} "))
+        .unwrap_or_default();
+    format!(
+        "{rate}Gear {} {}N {}-{}-{}-{}",
+        mc.gear, mc.command_rate, t.tcl, t.trcd, t.trp, t.tras
+    )
+}
+
+/// Turnaround timings as "sg/dg/sd/dd".
+fn turnaround(v: [u32; 4]) -> String {
+    format!("{}/{}/{}/{}", v[0], v[1], v[2], v[3])
+}
+
+/// Lines for the trained controller panel. Without controller data, a hint
+/// is shown only where the platform supports reading it.
+fn controller_lines<'a>(mc: Option<&MemoryControllerInfo>, theme: &TuiTheme) -> Vec<Line<'a>> {
+    let Some(mc) = mc else {
+        if crate::platform::mchbar::host_bridge_supported().is_some() {
+            return vec![Line::from(Span::styled(
+                " Trained timings: run as root with --direct-io",
+                theme.muted_style(),
+            ))];
+        }
+        return Vec::new();
+    };
+    let t = &mc.timings;
+    let row = |name: &str, fields: Vec<(&str, String)>| {
+        let mut spans = vec![Span::styled(format!(" {name:<11}"), theme.label_style())];
+        for (label, value) in fields {
+            spans.push(Span::styled(format!("{label} "), theme.muted_style()));
+            spans.push(Span::styled(
+                format!("{value:<5}  "),
+                Style::default().fg(Color::Cyan),
+            ));
+        }
+        Line::from(spans)
+    };
+    let mut mode = vec![
+        ("Gear", mc.gear.to_string()),
+        ("Cmd", format!("{}N", mc.command_rate)),
+    ];
+    if let Some(rate) = mc.data_rate_mts {
+        mode.insert(0, ("DDR5", rate.to_string()));
+    }
+    if let Some(qclk) = mc.qclk_mhz {
+        mode.push(("QCLK", format!("{qclk:.0}MHz")));
+    }
+    if let Some(bw) = mc.max_bandwidth_mbs {
+        mode.push(("Max BW", format!("{bw}MB/s")));
+    }
+    vec![
+        row("Mode", mode),
+        row(
+            "Primary",
+            vec![
+                ("tCL", t.tcl.to_string()),
+                ("tRCD", t.trcd.to_string()),
+                ("tRP", t.trp.to_string()),
+                ("tRAS", t.tras.to_string()),
+                ("tRC", t.trc.to_string()),
+            ],
+        ),
+        row(
+            "Write",
+            vec![
+                ("tCWL", t.tcwl.to_string()),
+                ("tWR", t.twr.to_string()),
+                ("tWTP", t.twtp.to_string()),
+                ("tRTP", t.trtp.to_string()),
+                ("tRCDW", t.trcdw.to_string()),
+            ],
+        ),
+        row(
+            "Refresh",
+            vec![
+                ("tRFC", t.trfc.to_string()),
+                ("tRFCpb", t.trfcpb.to_string()),
+                ("tREFI", t.trefi.to_string()),
+                ("tREFSBRD", t.trefsbrd.to_string()),
+                ("tRPab", t.trpab.to_string()),
+            ],
+        ),
+        row(
+            "Activate",
+            vec![
+                ("tRRD_L", t.trrd_l.to_string()),
+                ("tRRD_S", t.trrd_s.to_string()),
+                ("tFAW", t.tfaw.to_string()),
+            ],
+        ),
+        row(
+            "Turnaround",
+            vec![
+                ("tRDRD", turnaround(t.trdrd)),
+                ("tRDWR", turnaround(t.trdwr)),
+                ("tWRRD", turnaround(t.twrrd)),
+                ("tWRWR", turnaround(t.twrwr)),
+            ],
+        ),
+        Line::from(Span::styled(
+            " Turnarounds are same group / diff group / same DIMM / diff DIMM; tRC and tWR are derived",
+            theme.muted_style(),
+        )),
+    ]
+}
+
 /// Find a DIMM temperature reading by I2C bus/addr and sensor suffix (hub/ts0/ts1).
 fn find_dimm_temp(
     snapshot: &[(SensorId, SensorReading)],
@@ -320,4 +468,31 @@ fn truncate(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::memory::TrainedTimings;
+
+    #[test]
+    fn test_mode_summary_and_turnaround() {
+        let mc = MemoryControllerInfo {
+            source: "test".into(),
+            qclk_mhz: Some(3600.0),
+            data_rate_mts: Some(7200),
+            gear: 2,
+            command_rate: 2,
+            max_bandwidth_mbs: Some(115_200),
+            timings: TrainedTimings {
+                tcl: 36,
+                trcd: 44,
+                trp: 44,
+                tras: 96,
+                ..Default::default()
+            },
+        };
+        assert_eq!(mode_summary(&mc), "DDR5-7200 Gear 2 2N 36-44-44-96");
+        assert_eq!(turnaround([18, 8, 16, 16]), "18/8/16/16");
+    }
 }

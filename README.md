@@ -104,6 +104,7 @@ sudo sio
 
 ### Real-time Sensor Monitoring (TUI)
 - **hwmon** -- all kernel-exported sensors: temperatures, fan speeds, voltages, power, current
+- **Intel MCHBAR** (`--direct-io`, Arrow Lake-S) -- CPU/SoC BCLK, CPU-cores and iGPU temperatures, requested SA voltage; trained DDR5 rate, gear, command rate and timings in `sio memory` and the DIMM view
 - **CPU** -- per-core frequency and utilization
 - **GPU** -- temperature, fan speed, power draw, core/memory clocks, utilization, VRAM usage (NVIDIA via NVML, AMD via sysfs); Tegra integrated GPU frequency and load via devfreq
 - **RAPL** -- CPU package power consumption
@@ -173,6 +174,7 @@ sio runs without root and gracefully degrades:
 |-------------|-----------|
 | **Non-root** | CPU info, hwmon sensors, GPU (NVML + sysfs), PCI/USB, network, disk basic info, DMI non-restricted fields |
 | **Root / sudo** | + Full DMI (serials, UUID), SMART data, NVMe health, MSR access, RAPL power, SPD timings |
+| **`--direct-io`** | + Super I/O registers, I2C SPD/PMBus, Intel MCHBAR (BCLK, CPU-cores/iGPU temps, trained memory timings) |
 
 Fields requiring elevation show `[requires root]` or are omitted.
 

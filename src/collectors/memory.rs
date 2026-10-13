@@ -38,6 +38,7 @@ pub fn collect(direct_io: bool, board: Option<&'static BoardTemplate>) -> Memory
         total_slots: None,
         populated_slots,
         dimms,
+        controller: direct_io.then(super::memory_controller::collect).flatten(),
     }
 }
 
