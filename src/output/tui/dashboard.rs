@@ -1305,10 +1305,12 @@ fn build_gpu_panel<'a>(
     max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
-    let gpu_sensors: Vec<&(SensorId, SensorReading)> = snapshot
+    let mut gpu_sensors: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
-        .filter(|(id, _)| id.source == "nvml" || id.source == "amdgpu")
+        .filter(|(id, _)| id.source == "nvml" || id.source == "amdgpu" || id.source == "intel_gpu")
         .collect();
+    // Intel GPU rows go last so they never push discrete GPU rows out.
+    gpu_sensors.sort_by_key(|(id, _)| id.source == "intel_gpu");
 
     if gpu_sensors.is_empty() {
         return None;
@@ -1332,7 +1334,11 @@ fn build_gpu_panel<'a>(
                 "vram_used" => "VRAM Used",
                 other => other,
             };
-            let label = format!("GPU{gpu_idx} {sensor_name}");
+            let label = if id.source == "intel_gpu" {
+                truncate_label(&r.label, 20)
+            } else {
+                format!("GPU{gpu_idx} {sensor_name}")
+            };
             let key = format!("{}/{}/{}", id.source, id.chip, id.sensor);
             // Use uniform color for all GPU sparklines to avoid rainbow effect
             let spark_spans = history

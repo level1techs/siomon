@@ -52,6 +52,7 @@ sio reads directly from Linux kernel interfaces -- no lm-sensors or other usersp
 | GPU (NVIDIA)        | NVML via `dlopen("libnvidia-ml.so.1")`         |
 | GPU (AMD)           | `/sys/class/drm/card*/device/` + hwmon         |
 | GPU (Intel)         | `/sys/class/drm/card*/` + hwmon                |
+| Intel GPU sensors   | `/sys/class/drm/card*/gt/` and `tile*/gt*/`    |
 | Storage             | `/sys/class/block/` + `/sys/class/nvme/`       |
 | Network             | `/sys/class/net/` + `getifaddrs()`             |
 | PCI devices         | `/sys/bus/pci/devices/` + `pci.ids` (embedded) |
@@ -101,6 +102,7 @@ src/
     hwmon.rs           -- /sys/class/hwmon reader (with label overrides)
     cpu_freq.rs        -- Per-core frequency
     cpu_util.rs        -- Per-core utilization from /proc/stat deltas
+    intel_gpu.rs       -- Intel GPU clocks and idle time
     gpu_sensors.rs     -- NVML (persistent handle) + amdgpu hwmon polling
     rapl.rs            -- RAPL energy counter -> watts
     disk_activity.rs   -- /proc/diskstats -> MB/s

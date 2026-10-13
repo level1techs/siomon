@@ -108,6 +108,7 @@ sudo sio
 - **GPU** -- temperature, fan speed, power draw, core/memory clocks, utilization, VRAM usage (NVIDIA via NVML, AMD via sysfs); Tegra integrated GPU frequency and load via devfreq
 - **RAPL** -- CPU package power consumption
 - **Tegra** -- hardware engine clocks and state (APE, DLA, VIC, NVENC, etc.) on NVIDIA Jetson platforms
+- **Intel GPU** -- render/media clock and idle time (i915 and xe)
 - **Disk** -- per-device read/write throughput
 - **Network** -- per-interface RX/TX throughput
 - **Tracking** -- min/max/average for every sensor across the monitoring session
