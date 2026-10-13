@@ -196,6 +196,27 @@ impl std::fmt::Display for SensorUnit {
     }
 }
 
+impl SensorUnit {
+    /// Decimal places used when displaying a value in this unit.
+    ///
+    /// Volts get millivolt resolution: CPU VID requests and rail senses step
+    /// in 1-16 mV increments, which one decimal place would hide.
+    pub fn display_precision(&self) -> usize {
+        match self {
+            Self::Volts => 3,
+            Self::Celsius
+            | Self::Millivolts
+            | Self::Watts
+            | Self::Milliwatts
+            | Self::Amps
+            | Self::Milliamps => 1,
+            Self::Rpm | Self::Mhz | Self::Percent => 0,
+            Self::BytesPerSec | Self::MegabytesPerSec | Self::Bytes | Self::Megabytes => 1,
+            Self::Unitless => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorSnapshot {
     pub timestamp: DateTime<Utc>,
@@ -292,5 +313,12 @@ mod tests {
         assert_eq!(format!("{}", SensorUnit::Watts), "W");
         assert_eq!(format!("{}", SensorUnit::Rpm), "RPM");
         assert_eq!(format!("{}", SensorUnit::Percent), "%");
+    }
+
+    #[test]
+    fn test_display_precision_volts_is_millivolt() {
+        assert_eq!(SensorUnit::Volts.display_precision(), 3);
+        assert_eq!(SensorUnit::Celsius.display_precision(), 1);
+        assert_eq!(SensorUnit::Mhz.display_precision(), 0);
     }
 }

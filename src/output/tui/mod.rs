@@ -1180,21 +1180,7 @@ fn render_status_bar(
 }
 
 pub(crate) fn format_precision(unit: &SensorUnit) -> usize {
-    match unit {
-        SensorUnit::Celsius
-        | SensorUnit::Volts
-        | SensorUnit::Millivolts
-        | SensorUnit::Watts
-        | SensorUnit::Milliwatts
-        | SensorUnit::Amps
-        | SensorUnit::Milliamps => 1,
-        SensorUnit::Rpm | SensorUnit::Mhz | SensorUnit::Percent => 0,
-        SensorUnit::BytesPerSec
-        | SensorUnit::MegabytesPerSec
-        | SensorUnit::Bytes
-        | SensorUnit::Megabytes => 1,
-        SensorUnit::Unitless => 1,
-    }
+    unit.display_precision()
 }
 
 fn format_elapsed(d: Duration) -> String {

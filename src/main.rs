@@ -239,8 +239,11 @@ fn run_sensor_snapshot(
                 last_chip = chip_key;
             }
             println!(
-                "  {:<35} {:>10.1} {}",
-                reading.label, reading.current, reading.unit
+                "  {:<35} {:>10.*} {}",
+                reading.label,
+                reading.unit.display_precision().max(1),
+                reading.current,
+                reading.unit
             );
         }
     }
