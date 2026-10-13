@@ -125,6 +125,29 @@ mod tests {
     }
 
     #[test]
+    fn test_builtin_labels_asrock_z890_steel_legend_nct6686() {
+        let board = crate::db::boards::lookup_board_with_vendor("Z890 Steel Legend WiFi", "ASRock")
+            .unwrap();
+        assert!(board.description.contains("Steel Legend"));
+        let labels = crate::db::boards::resolve_labels(board);
+        assert_eq!(labels.get("hwmon/nct6686/in0").unwrap(), "Vcore");
+        assert_eq!(labels.get("hwmon/nct6686/in1").unwrap(), "");
+        assert_eq!(labels.get("hwmon/nct6686/in5").unwrap(), "VCCSA");
+        assert_eq!(labels.get("hwmon/nct6686/in6").unwrap(), "VDD_CPU");
+        assert_eq!(labels.get("hwmon/nct6686/fan1").unwrap(), "CPU_FAN1");
+        assert_eq!(labels.get("hwmon/nct6686/fan8").unwrap(), "AIO_PUMP");
+        let scaling: HashMap<_, _> = board.hwmon.voltage_scaling.iter().copied().collect();
+        assert_eq!(scaling["hwmon/nct6686/in3"], 12.0);
+    }
+
+    #[test]
+    fn test_z890_nova_and_steel_legend_do_not_cross_match() {
+        let nova = crate::db::boards::lookup_board_with_vendor("Z890 Nova WiFi", "ASRock").unwrap();
+        assert!(nova.description.contains("Nova"));
+        assert!(crate::db::boards::lookup_board_with_vendor("Z890 Pro-A", "ASRock").is_none());
+    }
+
+    #[test]
     fn test_builtin_labels_asus_w890e_hide_dead_superio_fans() {
         let labels = crate::db::boards::resolve_labels(
             crate::db::boards::lookup_board_with_vendor(

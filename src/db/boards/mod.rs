@@ -405,6 +405,7 @@ static BOARDS: &[&BoardTemplate] = &[
     &asrock::am4::a300m_deskmini::BOARD,
     // ASRock Intel
     &asrock::z890::z890_nova_wifi::BOARD,
+    &asrock::z890::z890_steel_legend_wifi::BOARD,
     &asrock::z390::z390_extreme4::BOARD,
     &asrock::z390::z390m_itx::BOARD,
     // Mini-PCs
