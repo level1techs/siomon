@@ -203,8 +203,9 @@ fn lookup_intel(family: u32, model: u32) -> Option<String> {
         0xBD => "Lunar Lake",
 
         // Arrow Lake
-        0xC5 => "Arrow Lake",
-        0xC6 => "Arrow Lake-H",
+        0xB5 => "Arrow Lake-U",
+        0xC5 => "Arrow Lake-H",
+        0xC6 => "Arrow Lake-S",
 
         // Sapphire Rapids (server)
         0x8F => "Sapphire Rapids",
@@ -258,6 +259,17 @@ mod tests {
     fn test_intel_raptor_lake() {
         let result = lookup_with_brand(&CpuVendor::Intel, 6, 0xB7, "");
         assert_eq!(result, Some("Raptor Lake".to_string()));
+    }
+
+    #[test]
+    fn test_intel_arrow_lake_variants() {
+        // Kernel intel-family.h: ARROWLAKE = 0xC6, ARROWLAKE_H = 0xC5, ARROWLAKE_U = 0xB5
+        let s = lookup_with_brand(&CpuVendor::Intel, 6, 0xC6, "Intel(R) Core(TM) Ultra 9 285K");
+        assert_eq!(s, Some("Arrow Lake-S".to_string()));
+        let h = lookup_with_brand(&CpuVendor::Intel, 6, 0xC5, "");
+        assert_eq!(h, Some("Arrow Lake-H".to_string()));
+        let u = lookup_with_brand(&CpuVendor::Intel, 6, 0xB5, "");
+        assert_eq!(u, Some("Arrow Lake-U".to_string()));
     }
 
     #[test]
