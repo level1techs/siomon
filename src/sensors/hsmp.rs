@@ -11,12 +11,21 @@ mod inner {
 
     use crate::model::sensor::{SensorCategory, SensorId, SensorReading, SensorUnit};
 
+    #[repr(C, packed(4))]
+    struct HsmpMessage {
+        msg_id: u32,
+        num_args: u16,
+        response_sz: u16,
+        args: [u32; 8],
+        sock_ind: u16,
+    }
+
     // HSMP ioctl: _IOWR(0xF8, 0, hsmp_message)
     // The ioctl number encodes size=42 (the kernel's unpacked field sum).
     // Our #[repr(C, packed(4))] struct is 44 bytes due to trailing padding
     // on sock_ind (u16 → 4-byte boundary). The kernel reads 42 bytes via
     // copy_from_user, so the 2-byte tail padding is never accessed.
-    const HSMP_IOCTL: libc::c_ulong = 0xC02AF800;
+    const HSMP_IOCTL: libc::Ioctl = libc::_IOWR::<HsmpMessage>(0xF8, 0x0);
 
     // Message IDs
     const HSMP_TEST: u32 = 0x01;
@@ -29,15 +38,6 @@ mod inner {
     const HSMP_GET_DDR_BANDWIDTH: u32 = 0x14;
     const HSMP_GET_RAILS_SVI: u32 = 0x1B;
     const HSMP_GET_SOCKET_FMAX_FMIN: u32 = 0x1C;
-
-    #[repr(C, packed(4))]
-    struct HsmpMessage {
-        msg_id: u32,
-        num_args: u16,
-        response_sz: u16,
-        args: [u32; 8],
-        sock_ind: u16,
-    }
 
     pub struct HsmpSource {
         fd: Option<File>,

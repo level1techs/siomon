@@ -9,7 +9,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 // SG_IO ioctl request number
-const SG_IO: libc::c_ulong = 0x2285;
+const SG_IO: libc::Ioctl = 0x2285;
 
 // SG_IO data transfer direction: from device to host
 const SG_DXFER_FROM_DEV: i32 = -3;

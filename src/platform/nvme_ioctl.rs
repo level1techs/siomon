@@ -7,18 +7,6 @@ use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
-// NVME_IOCTL_ADMIN_CMD = 0xC0484E41
-const NVME_IOCTL_ADMIN_CMD: libc::c_ulong = 0xC0484E41;
-
-// NVMe admin command opcode for Get Log Page
-const NVME_ADMIN_GET_LOG_PAGE: u8 = 0x02;
-
-// SMART/Health log page identifier
-const NVME_LOG_SMART: u32 = 0x02;
-
-// Size of the SMART log in bytes
-const SMART_LOG_SIZE: u32 = 512;
-
 /// NVMe Admin Command structure passed to the ioctl.
 #[repr(C)]
 #[derive(Default)]
@@ -68,6 +56,17 @@ pub struct NvmeSmartLog {
     pub temp_sensor: [u16; 8],
     pub rsvd_tail: [u8; 296],
 }
+
+const NVME_IOCTL_ADMIN_CMD: libc::Ioctl = libc::_IOWR::<NvmeAdminCmd>(b'N' as u32, 0x41);
+
+// NVMe admin command opcode for Get Log Page
+const NVME_ADMIN_GET_LOG_PAGE: u8 = 0x02;
+
+// SMART/Health log page identifier
+const NVME_LOG_SMART: u32 = 0x02;
+
+// Size of the SMART log in bytes
+const SMART_LOG_SIZE: u32 = 512;
 
 /// Read the NVMe SMART/Health log from a controller device (e.g. `/dev/nvme0`).
 ///

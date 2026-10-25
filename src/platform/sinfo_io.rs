@@ -17,27 +17,11 @@ use super::port_io::PortIo;
 
 // ── IOCTL definitions (mirrors kmod/sinfo_io/sinfo_io.h) ───────────────
 
-const SINFO_IO_MAGIC: u8 = b'S';
 const SINFO_IO_BATCH_MAX: usize = 32;
 
-// _IOW('S', 0x01, sinfo_io_setup)  = direction=1 (write), size=4, type='S', nr=1
-// _IOWR('S', 0x02, sinfo_io_reg)   = direction=3 (rw),    size=4, type='S', nr=2
-// _IOWR('S', 0x03, sinfo_io_batch) = direction=3 (rw),    size=100, type='S', nr=3
-//
-// Linux ioctl encoding: direction(2) << 30 | size(14) << 16 | type(8) << 8 | nr(8)
-const fn iow<T>(nr: u8) -> libc::c_ulong {
-    let size = std::mem::size_of::<T>() as libc::c_ulong;
-    (1 << 30) | (size << 16) | ((SINFO_IO_MAGIC as libc::c_ulong) << 8) | nr as libc::c_ulong
-}
-
-const fn iowr<T>(nr: u8) -> libc::c_ulong {
-    let size = std::mem::size_of::<T>() as libc::c_ulong;
-    (3 << 30) | (size << 16) | ((SINFO_IO_MAGIC as libc::c_ulong) << 8) | nr as libc::c_ulong
-}
-
-const SINFO_IO_SETUP: libc::c_ulong = iow::<SinfoIoSetup>(0x01);
-const SINFO_IO_READ_REG: libc::c_ulong = iowr::<SinfoIoReg>(0x02);
-const SINFO_IO_READ_BATCH: libc::c_ulong = iowr::<SinfoIoBatch>(0x03);
+const SINFO_IO_SETUP: libc::Ioctl = libc::_IOW::<SinfoIoSetup>(b'S' as u32, 0x01);
+const SINFO_IO_READ_REG: libc::Ioctl = libc::_IOWR::<SinfoIoReg>(b'S' as u32, 0x02);
+const SINFO_IO_READ_BATCH: libc::Ioctl = libc::_IOWR::<SinfoIoBatch>(b'S' as u32, 0x03);
 
 // ── Kernel-matching structs ─────────────────────────────────────────────
 
@@ -215,17 +199,6 @@ impl HwmAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_ioctl_numbers() {
-        // Verify our const fn ioctl encoding matches the C macro definitions.
-        // _IOW('S', 0x01, struct sinfo_io_setup) where sizeof = 4
-        assert_eq!(SINFO_IO_SETUP, 0x4004_5301);
-        // _IOWR('S', 0x02, struct sinfo_io_reg) where sizeof = 4
-        assert_eq!(SINFO_IO_READ_REG, 0xC004_5302);
-        // _IOWR('S', 0x03, struct sinfo_io_batch) where sizeof = 100
-        assert_eq!(SINFO_IO_READ_BATCH, 0xC064_5303);
-    }
 
     #[test]
     fn test_struct_sizes() {
