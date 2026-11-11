@@ -3,8 +3,8 @@
 //! Adds what hwmon and cpufreq do not expose: the effective clock (average
 //! including idle), the active clock and active time (while not idle), the
 //! core ratio, the requested core and uncore VID, thermal headroom to the
-//! throttle temperature, whether and why cores are throttling, and the CPU
-//! VR current limit. Temperatures themselves are left to `coretemp`.
+//! throttle temperature, whether and why cores are throttling, and the PL4
+//! (peak power) limit. Temperatures themselves are left to `coretemp`.
 //!
 //! Throttling comes from the architectural live status bits of
 //! `IA32_THERM_STATUS`: thermal (at the throttle temperature, PROCHOT or
@@ -47,6 +47,10 @@ mod inner {
         pub core_vid: bool,
         /// `MSR_UNCORE_PERF_STATUS[31:16]` is the requested uncore VID.
         pub uncore_vid: bool,
+        /// `MSR 0x601[14:0]` is PL4 in watts (RAPL power unit from
+        /// `MSR 0x606`). Measured on Arrow Lake-S only; the register is a
+        /// current limit in some older SDM tables, so other parts stay off.
+        pub pl4: bool,
     }
 
     pub(super) fn model_features(family: u32, model: u32) -> ModelFeatures {
@@ -58,11 +62,13 @@ mod inner {
             0xB7 | 0xBA | 0xBF => ModelFeatures {
                 core_vid: true,
                 uncore_vid: false,
+                pl4: false,
             },
             // Arrow Lake-S
             0xC6 => ModelFeatures {
                 core_vid: true,
                 uncore_vid: true,
+                pl4: true,
             },
             _ => ModelFeatures::default(),
         }
@@ -95,7 +101,9 @@ mod inner {
     }
 
     /// TCC activation offset in °C from `MSR_TEMPERATURE_TARGET[29:24]`:
-    /// throttling starts this many degrees below TjMAX.
+    /// throttling starts this many degrees below TjMAX. The field width
+    /// differs between public sources (6 or 7 bits, different top bit);
+    /// identical for offsets below 64 C.
     pub(super) fn tcc_offset(temp_target: u64) -> u64 {
         bits(temp_target, 29, 24)
     }
@@ -129,7 +137,10 @@ mod inner {
         /// Running below the requested clock because of a power limit
         /// (bit 10).
         pub power: bool,
-        /// Limited by an electrical current limit (bit 12).
+        /// Current-limit status (bit 12). Besides an electrical current
+        /// limit, on Arrow Lake-S this bit was also seen set on all CPUs
+        /// while the PL4 predicted-peak limit was binding (all-core 256-bit
+        /// AVX2 load), so it does not by itself mean an IccMax limit.
         pub current: bool,
     }
 
@@ -148,11 +159,19 @@ mod inner {
         }
     }
 
-    /// CPU VR current limit in amps from `MSR_VR_CURRENT_CONFIG[12:0]`
-    /// (1/8 A units). This is a current, not a power limit.
-    pub(super) fn vr_current_limit_amps(vr_config: u64) -> Option<f64> {
-        let raw = bits(vr_config, 12, 0);
-        (raw != 0).then(|| raw as f64 / 8.0)
+    /// PL4 in watts from `MSR 0x601[14:0]` scaled by the RAPL power unit
+    /// (`MSR 0x606[3:0]`, 1/2^n W), plus the lock bit (31). `None` when the
+    /// field is 0 or the unit word is unavailable. Public sources disagree on
+    /// the field width (13, 15 or 16 bits); all agree below 1024 W.
+    pub(super) fn pl4_watts(pl4_word: u64, unit_word: Option<u64>) -> Option<(f64, bool)> {
+        let raw = bits(pl4_word, 14, 0);
+        let n = bits(unit_word?, 3, 0);
+        (raw != 0).then(|| {
+            (
+                raw as f64 / f64::from(1u32 << n),
+                bits(pl4_word, 31, 31) == 1,
+            )
+        })
     }
 
     /// APERF/MPERF/TSC sample of one logical CPU.
@@ -255,8 +274,6 @@ mod inner {
         tcc_offset: u64,
         /// Throttle temperature (TjMAX − TCC offset) in °C, read once.
         throttle_temp: Option<f64>,
-        /// CPU VR current limit in amps, read once.
-        vr_current_limit: Option<f64>,
     }
 
     pub struct IntelMsrSource {
@@ -331,9 +348,6 @@ mod inner {
                             throttle_temp: target
                                 .and_then(tjmax)
                                 .map(|tj| tj.saturating_sub(tcc) as f64),
-                            vr_current_limit: dev
-                                .read(msr::MSR_VR_CURRENT_CONFIG)
-                                .and_then(vr_current_limit_amps),
                         });
                         packages.len() - 1
                     }
@@ -550,13 +564,21 @@ mod inner {
                 SensorCategory::Other,
             );
         }
-        if let Some(amps) = pkg.vr_current_limit {
+        if features.pl4
+            && let Some((watts, locked)) = dev
+                .read(msr::MSR_PL4_POWER_LIMIT)
+                .and_then(|w| pl4_watts(w, dev.read(msr::MSR_RAPL_POWER_UNIT)))
+        {
             push(
-                "vr_current_limit",
-                "CPU VR Current Limit",
-                amps,
-                SensorUnit::Amps,
-                SensorCategory::Current,
+                "pl4",
+                if locked {
+                    "PL4 (MSR 0x601, locked)"
+                } else {
+                    "PL4 (MSR 0x601)"
+                },
+                watts,
+                SensorUnit::Watts,
+                SensorCategory::Power,
             );
         }
 
@@ -724,17 +746,20 @@ mod tests {
     }
 
     #[test]
-    fn test_vr_current_limit_is_amps() {
-        assert_eq!(vr_current_limit_amps(0xD48), Some(425.0));
-        assert_eq!(vr_current_limit_amps(0), None);
+    fn test_pl4_watts() {
+        // 3400 * 0.125 W = 425 W, unlocked (unit word from the reference CPU)
+        assert_eq!(pl4_watts(0xD48, Some(0xA0E03)), Some((425.0, false)));
+        assert_eq!(pl4_watts(0x8000_0D48, Some(0xA0E03)), Some((425.0, true)));
+        assert_eq!(pl4_watts(0, Some(0xA0E03)), None);
+        assert_eq!(pl4_watts(0xD48, None), None);
     }
 
     #[test]
     fn test_model_features_gate() {
         let arl = model_features(6, 0xC6);
-        assert!(arl.core_vid && arl.uncore_vid);
+        assert!(arl.core_vid && arl.uncore_vid && arl.pl4);
         let rpl = model_features(6, 0xB7);
-        assert!(rpl.core_vid && !rpl.uncore_vid);
+        assert!(rpl.core_vid && !rpl.uncore_vid && !rpl.pl4);
         // Arrow Lake-H/U and unknown models stay off until verified
         assert_eq!(model_features(6, 0xC5), ModelFeatures::default());
         assert_eq!(model_features(0x19, 0xC6), ModelFeatures::default());

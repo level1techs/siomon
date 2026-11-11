@@ -105,7 +105,7 @@ sudo sio
 ### Real-time Sensor Monitoring (TUI)
 - **hwmon** -- all kernel-exported sensors: temperatures, fan speeds, voltages, power, current
 - **CPU** -- per-core frequency and utilization
-- **Intel MSR** (root or `CAP_SYS_RAWIO`) -- per-core effective clock (average including idle), active clock and active time, ratio, requested core VID (Raptor Lake, Arrow Lake-S), thermal headroom and whether each core is throttling; per package the throttle temperature, how many cores are throttling for thermal, power-limit or current-limit reasons, the CPU VR current limit and the requested uncore VID (Arrow Lake-S). All reads are read-only and allowlisted
+- **Intel MSR** (root or `CAP_SYS_RAWIO`) -- per-core effective clock (average including idle), active clock and active time, ratio, requested core VID (Raptor Lake, Arrow Lake-S), thermal headroom and whether each core is throttling; per package the throttle temperature, how many cores are throttling for thermal, power-limit or current-limit reasons, the PL4 peak power limit (MSR 0x601, watts) and the requested uncore VID (both Arrow Lake-S only). All reads are read-only and allowlisted
 - **GPU** -- temperature, fan speed, power draw, core/memory clocks, utilization, VRAM usage (NVIDIA via NVML, AMD via sysfs); Tegra integrated GPU frequency and load via devfreq
 - **RAPL** -- CPU package power consumption
 - **Tegra** -- hardware engine clocks and state (APE, DLA, VIC, NVENC, etc.) on NVIDIA Jetson platforms

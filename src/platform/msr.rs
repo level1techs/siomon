@@ -18,7 +18,13 @@ pub const IA32_PERF_STATUS: u32 = 0x198;
 pub const IA32_THERM_STATUS: u32 = 0x19C;
 pub const MSR_TEMPERATURE_TARGET: u32 = 0x1A2;
 pub const IA32_PACKAGE_THERM_STATUS: u32 = 0x1B1;
-pub const MSR_VR_CURRENT_CONFIG: u32 = 0x601;
+/// PL4 (peak power limit): bits [14:0] in RAPL power units (see
+/// [`MSR_RAPL_POWER_UNIT`]), bit 31 = lock. Older SDM revisions call this
+/// `VR_CURRENT_CONFIG` (a current); on Arrow Lake-S it was measured to be
+/// watts (0xD48 = 425 W) and to be the enforced PL4.
+pub const MSR_PL4_POWER_LIMIT: u32 = 0x601;
+/// RAPL unit register: bits [3:0] give the power unit as 1/2^n W.
+pub const MSR_RAPL_POWER_UNIT: u32 = 0x606;
 pub const MSR_UNCORE_PERF_STATUS: u32 = 0x621;
 
 /// Registers this crate may read. Any other address is refused before the
@@ -31,7 +37,8 @@ pub const ALLOWED: &[u32] = &[
     IA32_THERM_STATUS,
     MSR_TEMPERATURE_TARGET,
     IA32_PACKAGE_THERM_STATUS,
-    MSR_VR_CURRENT_CONFIG,
+    MSR_PL4_POWER_LIMIT,
+    MSR_RAPL_POWER_UNIT,
     MSR_UNCORE_PERF_STATUS,
 ];
 
