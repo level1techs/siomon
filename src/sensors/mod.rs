@@ -14,6 +14,7 @@ pub mod gpu_sensors;
 pub mod hsmp;
 pub mod hwmon;
 pub mod i2c;
+pub mod intel_uncore;
 pub mod ipmi;
 pub mod mce;
 pub mod memory_util;

@@ -246,6 +246,11 @@ fn discover_all_sources(
             Box::new(src)
         });
 
+        // Moderate: opens uncore perf counters and takes a baseline
+        let h_uncore = s.spawn(|| -> Box<dyn SensorSource> {
+            Box::new(super::intel_uncore::IntelUncoreSource::discover())
+        });
+
         // Direct I/O sources (Super I/O, I2C) — only when --direct-io is set
         let h_direct_io = if direct_io {
             Some(s.spawn(|| -> Vec<Box<dyn SensorSource>> {
@@ -327,6 +332,7 @@ fn discover_all_sources(
         result.extend(join_or_log(h_gpu.join(), "gpu"));
         result.extend(join_or_log(h_hsmp.join(), "hsmp"));
         result.extend(join_or_log(h_ipmi.join(), "ipmi"));
+        result.extend(join_or_log(h_uncore.join(), "intel_uncore"));
 
         if let Some(h) = h_direct_io
             && let Some(dio) = join_or_log(h.join(), "direct-io")

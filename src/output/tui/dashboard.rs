@@ -816,6 +816,24 @@ fn build_memory_panel<'a>(
         ])));
     }
 
+    // DRAM bandwidth from the uncore IMC counters
+    for (_, r) in ["data_read", "data_write", "data_total"]
+        .iter()
+        .filter_map(|s| {
+            snapshot
+                .iter()
+                .find(|(id, _)| id.source == "uncore" && id.chip == "imc" && id.sensor == *s)
+        })
+    {
+        rows.push(PanelRow::Text(Line::from(vec![
+            Span::styled(
+                format!("{:<20} ", truncate_label(&r.label, 20)),
+                theme.label_style(),
+            ),
+            Span::styled(format!("{:>7.0} MB/s", r.current), theme.info_style()),
+        ])));
+    }
+
     // RAPL sub-domains (core, uncore, dram — package is in the CPU panel)
     for (_, r) in snapshot.iter().filter(|(id, _)| {
         id.source == "cpu" && id.chip == "rapl" && !id.sensor.starts_with("package")

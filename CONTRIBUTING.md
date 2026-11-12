@@ -57,6 +57,7 @@ sio reads directly from Linux kernel interfaces -- no lm-sensors or other usersp
 | PCI devices         | `/sys/bus/pci/devices/` + `pci.ids` (embedded) |
 | Sensors (hwmon)     | `/sys/class/hwmon/hwmon*/`                     |
 | Power (RAPL)        | `/sys/class/powercap/intel-rapl:*/`            |
+| Intel uncore        | sysfs PMU events via `perf_event_open`         |
 | Disk throughput     | `/proc/diskstats`                              |
 | Network throughput  | `/sys/class/net/*/statistics/`                 |
 
@@ -105,6 +106,7 @@ src/
     rapl.rs            -- RAPL energy counter -> watts
     disk_activity.rs   -- /proc/diskstats -> MB/s
     network_stats.rs   -- Interface byte counters -> MB/s
+    intel_uncore.rs    -- Intel ring clock and DRAM bandwidth (perf)
     alerts.rs          -- Threshold-based sensor alerts with cooldown
     poller.rs          -- Threaded polling scheduler + shared state
 
@@ -152,3 +154,4 @@ src/
 | `thiserror`             | 2           | Error derive macros                           |
 | `glob`                  | 0.3         | Sysfs path enumeration                        |
 | `log` + `env_logger`    | 0.4 / 0.11  | Debug logging (`RUST_LOG=debug`)              |
+| `perf-event2`           | 0.7         | perf counters for sysfs-defined PMU events    |

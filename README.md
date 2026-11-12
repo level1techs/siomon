@@ -110,6 +110,7 @@ sudo sio
 - **Tegra** -- hardware engine clocks and state (APE, DLA, VIC, NVENC, etc.) on NVIDIA Jetson platforms
 - **Disk** -- per-device read/write throughput
 - **Network** -- per-interface RX/TX throughput
+- **Intel uncore** (root or `CAP_PERFMON`) -- ring/LLC clock (from the `uncore_cncu` clock counter) and DRAM read/write/total bandwidth from kernel-defined perf events; configured ring clock range
 - **Tracking** -- min/max/average for every sensor across the monitoring session
 - **Collapsible groups** -- groups with 32+ sensors auto-collapse; toggle with Enter/Space; collapsed groups show summary min/max/avg
 - **Alerts** -- configurable threshold alerts (`--alert "hwmon/nct6798/temp1 > 80 @30s"`)

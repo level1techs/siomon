@@ -58,6 +58,9 @@ clap.workspace = true
 nix = { version = "0.29", features = ["fs", "ioctl", "mman", "process"] }
 libc = "0.2"
 
+# perf_event_open with sysfs-defined PMU events (uncore counters)
+perf-event2 = "0.7"
+
 # Dynamic loading (NVML)
 libloading = { version = "0.8", optional = true }
 
