@@ -10,6 +10,58 @@ pub struct MemoryInfo {
     pub total_slots: Option<u32>,
     pub populated_slots: Option<u32>,
     pub dimms: Vec<DimmInfo>,
+    /// Trained configuration read from the memory controller, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller: Option<MemoryControllerInfo>,
+}
+
+/// Memory-controller configuration as trained by the BIOS (Intel MCHBAR,
+/// `--direct-io`). These are the values in effect, not SPD or XMP profiles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryControllerInfo {
+    /// Register block the timings were decoded from (e.g. "mc0 channel 0").
+    pub source: String,
+    /// Memory controller clock (QCLK) in MHz.
+    pub qclk_mhz: Option<f64>,
+    /// DDR data rate in MT/s (2 × QCLK).
+    pub data_rate_mts: Option<u32>,
+    /// Gear mode (2 or 4).
+    pub gear: u8,
+    /// Command rate in clocks (1N or 2N).
+    pub command_rate: u8,
+    /// Configured theoretical bandwidth ceiling in MB/s.
+    pub max_bandwidth_mbs: Option<u32>,
+    pub timings: TrainedTimings,
+}
+
+/// Trained DRAM timings in memory clocks. Turnaround timings are
+/// `[same group, different group, same DIMM, different DIMM]`. `trc`
+/// (tRAS + tRP) and `twr` (tWTP − tCWL − 8) are derived from the trained
+/// fields; the rest are read directly.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrainedTimings {
+    pub tcl: u32,
+    pub trcd: u32,
+    pub trcdw: u32,
+    pub trp: u32,
+    pub trpab: u32,
+    pub tras: u32,
+    pub trc: u32,
+    pub tcwl: u32,
+    pub twr: u32,
+    pub twtp: u32,
+    pub trtp: u32,
+    pub tfaw: u32,
+    pub trrd_l: u32,
+    pub trrd_s: u32,
+    pub trfc: u32,
+    pub trfcpb: u32,
+    pub trefi: u32,
+    pub trefsbrd: u32,
+    pub trdrd: [u32; 4],
+    pub trdwr: [u32; 4],
+    pub twrrd: [u32; 4],
+    pub twrwr: [u32; 4],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

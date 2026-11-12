@@ -131,7 +131,7 @@ pub fn render(
 
         // Status bar
         let status = Paragraph::new(format!(
-            " q: quit | d: tree view | m: DIMM | t: theme | /: search | {sensor_count} sensors | {elapsed_str}"
+            " q: quit | d: tree view | p: CPU | m: DIMM | t: theme | /: search | {sensor_count} sensors | {elapsed_str}"
         ))
         .style(theme.status_style());
         frame.render_widget(status, outer[2]);
@@ -640,6 +640,46 @@ fn build_cpu_panel<'a>(
         rows.push(PanelRow::Text(Line::from(spans)));
     }
 
+    // Intel MSR per-core summaries: average effective clock, highest VID
+    for (chip, label, unit, use_max) in [
+        ("eff_clock", "Eff clock", "MHz", false),
+        ("vid", "VID max", "V", true),
+    ] {
+        let mut by_kind: Vec<String> = Vec::new();
+        for prefix in ["P-Core", "E-Core", "Core"] {
+            let vals: Vec<f64> = snapshot
+                .iter()
+                .filter(|(id, r)| {
+                    id.source == "cpu" && id.chip == chip && r.label.starts_with(prefix)
+                })
+                .map(|(_, r)| r.current)
+                .collect();
+            if vals.is_empty() {
+                continue;
+            }
+            let v = if use_max {
+                vals.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            } else {
+                vals.iter().sum::<f64>() / vals.len() as f64
+            };
+            let tag = prefix.trim_end_matches("-Core").trim_end_matches("Core");
+            let prec = if use_max { 3 } else { 0 };
+            by_kind.push(format!(
+                "{tag}{}{v:.prec$}",
+                if tag.is_empty() { "" } else { " " }
+            ));
+        }
+        if !by_kind.is_empty() {
+            rows.push(PanelRow::Text(Line::from(vec![
+                Span::styled(format!("{label}: "), theme.label_style()),
+                Span::styled(
+                    format!("{} {unit}", by_kind.join(" / ")),
+                    theme.info_style(),
+                ),
+            ])));
+        }
+    }
+
     Some(Panel {
         title: "CPU".into(),
         headline,
@@ -1121,6 +1161,29 @@ fn build_fans_panel<'a>(
 // Platform (HSMP) Panel
 // ---------------------------------------------------------------------------
 
+/// Intel package-level readings shown in the Platform panel (the full set
+/// is in the CPU view): `(source, chip prefix, sensor suffixes)`.
+const INTEL_PLATFORM_SENSORS: &[(&str, &str, &[&str])] = &[
+    (
+        "cpu",
+        "package",
+        &["uncore_vid", "throttle_thermal", "throttle_power"],
+    ),
+    ("uncore", "clocks", &["ring_clock"]),
+    ("mchbar", "", &["sa_vid", "bclk"]),
+    ("cpu", "rapl_limits", &["-pl1", "-pl2"]),
+];
+
+fn is_intel_platform_sensor(id: &SensorId) -> bool {
+    INTEL_PLATFORM_SENSORS
+        .iter()
+        .any(|(source, chip, sensors)| {
+            id.source == *source
+                && id.chip.starts_with(chip)
+                && sensors.iter().any(|s| id.sensor.ends_with(s))
+        })
+}
+
 fn build_platform_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     max_entries: usize,
@@ -1129,7 +1192,9 @@ fn build_platform_panel<'a>(
     // DDR bandwidth and memory clock are shown in the Memory panel.
     let hsmp: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
-        .filter(|(id, _)| id.source == "hsmp" && !is_hsmp_memory_sensor(id))
+        .filter(|(id, _)| {
+            (id.source == "hsmp" && !is_hsmp_memory_sensor(id)) || is_intel_platform_sensor(id)
+        })
         .collect();
 
     if hsmp.is_empty() {

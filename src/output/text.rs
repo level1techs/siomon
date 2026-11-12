@@ -84,6 +84,17 @@ pub fn print_summary(info: &SystemInfo) {
             format_bytes(info.memory.swap_free_bytes)
         );
     }
+    if let Some(ref mc) = info.memory.controller {
+        let t = &mc.timings;
+        let rate = mc
+            .data_rate_mts
+            .map(|r| format!("DDR5-{r} "))
+            .unwrap_or_default();
+        println!(
+            "  Controller:      {rate}Gear {} {}N  {}-{}-{}-{}  tRFC {}  ({})",
+            mc.gear, mc.command_rate, t.tcl, t.trcd, t.trp, t.tras, t.trfc, mc.source
+        );
+    }
     for dimm in &info.memory.dimms {
         println!(
             "  DIMM {}: {} {:?} @ {} MT/s{}",

@@ -19,6 +19,7 @@ use crate::model::memory::MemoryInfo;
 use crate::model::sensor::{self, SensorCategory, SensorId, SensorReading, SensorUnit};
 use crate::sensors::poller::PollStatsState;
 
+mod cpu_view;
 mod dashboard;
 mod dimm_view;
 pub mod theme;
@@ -30,6 +31,7 @@ enum ViewMode {
     Tree,
     Dashboard,
     Dimm,
+    Cpu,
 }
 
 /// Static system info gathered once at TUI startup for the dashboard header.
@@ -420,6 +422,16 @@ fn run_loop(
                     &theme,
                 )?;
             }
+            ViewMode::Cpu => {
+                cpu_view::render(
+                    terminal,
+                    &snapshot,
+                    memory_info,
+                    &sys_summary,
+                    &elapsed_str,
+                    &theme,
+                )?;
+            }
         }
 
         // Wait for next tick or meaningful input event.
@@ -478,7 +490,7 @@ fn run_loop(
                                     view_mode = match view_mode {
                                         ViewMode::Tree => ViewMode::Dashboard,
                                         ViewMode::Dashboard => ViewMode::Tree,
-                                        ViewMode::Dimm => ViewMode::Dashboard,
+                                        ViewMode::Dimm | ViewMode::Cpu => ViewMode::Dashboard,
                                     };
                                 }
                                 KeyCode::Char('t') if !colors_locked => {
@@ -487,6 +499,9 @@ fn run_loop(
                                 }
                                 KeyCode::Char('m') => {
                                     view_mode = ViewMode::Dimm;
+                                }
+                                KeyCode::Char('p') => {
+                                    view_mode = ViewMode::Cpu;
                                 }
                                 KeyCode::Char('/') => {
                                     // Switch to tree view if in dashboard

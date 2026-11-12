@@ -48,6 +48,7 @@ sio reads directly from Linux kernel interfaces -- no lm-sensors or other usersp
 | Memory              | `/proc/meminfo` + SMBIOS Type 17               |
 | Motherboard/BIOS    | `/sys/class/dmi/id/`                           |
 | Chipset             | PCI host bridge at `0000:00:00.0`              |
+| Intel MCHBAR        | `/dev/mem` (read-only, `--direct-io`)          |
 | UEFI/Secure Boot    | `/sys/firmware/efi/`                           |
 | GPU (NVIDIA)        | NVML via `dlopen("libnvidia-ml.so.1")`         |
 | GPU (AMD)           | `/sys/class/drm/card*/device/` + hwmon         |
@@ -99,6 +100,7 @@ src/
 
   sensors/             -- Real-time sensor polling
     hwmon.rs           -- /sys/class/hwmon reader (with label overrides)
+    intel_mchbar.rs    -- Intel MCHBAR BCLK, IA/GT temps, SA VID
     cpu_freq.rs        -- Per-core frequency
     cpu_util.rs        -- Per-core utilization from /proc/stat deltas
     gpu_sensors.rs     -- NVML (persistent handle) + amdgpu hwmon polling
@@ -118,6 +120,7 @@ src/
     msr.rs             -- /dev/cpu/N/msr access
     nvml.rs            -- NVML dlopen wrapper (18 functions)
     nvme_ioctl.rs      -- NVMe SMART/Health via admin command ioctl
+    mchbar.rs          -- read-only, allowlisted Intel MCHBAR MMIO access
 
   output/              -- Output formatters
     text.rs            -- Pretty-printed terminal output
