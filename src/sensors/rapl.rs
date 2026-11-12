@@ -25,6 +25,13 @@ struct RaplDomain {
 }
 
 /// Map a powercap constraint name to Intel's power-limit name.
+///
+/// Only the MSR-backed `intel-rapl:*` zones are scanned, never the
+/// `intel-rapl-mmio:*` zones. On Arrow Lake-S the MMIO zone's `peak_power`
+/// (PL4) is a firmware copy that is not enforced, while the `intel-rapl:0`
+/// zone has no PL4 constraint at all (the kernel does not manage PL4 there;
+/// the enforced value is in MSR 0x601). A PL4 shown from here is whatever the
+/// kernel reports for its zone, so treat it as the configured value.
 fn limit_name(constraint: &str) -> Option<&'static str> {
     match constraint {
         "long_term" => Some("PL1"),
