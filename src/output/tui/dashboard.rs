@@ -1241,6 +1241,12 @@ fn build_cpu_freq_panel<'a>(
 // Voltage Panel (3-col only)
 // ---------------------------------------------------------------------------
 
+/// Voltages the CPU requests (VID) rather than measured rails; sources
+/// label them with a " VID" suffix.
+fn is_vid_request(reading: &SensorReading) -> bool {
+    reading.label.ends_with(" VID")
+}
+
 fn build_voltage_panel<'a>(
     snapshot: &'a [(SensorId, SensorReading)],
     history: &'a SensorHistory,
@@ -1248,9 +1254,11 @@ fn build_voltage_panel<'a>(
     max_entries: usize,
     theme: &TuiTheme,
 ) -> Option<Panel<'a>> {
+    // VID requests are not measured rails, and per-core VIDs would crowd
+    // the board rails out.
     let mut volts: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
-        .filter(|(_, r)| r.category == SensorCategory::Voltage)
+        .filter(|(_, r)| r.category == SensorCategory::Voltage && !is_vid_request(r))
         .collect();
 
     if volts.is_empty() {

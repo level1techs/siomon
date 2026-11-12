@@ -102,6 +102,28 @@ pub fn glob_paths(pattern: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Parse a kernel CPU list such as `0-7,16,18-19` into CPU numbers.
+///
+/// Malformed ranges are skipped rather than failing the whole list.
+pub fn parse_cpulist(list: &str) -> Vec<u32> {
+    let mut cpus = Vec::new();
+    for part in list.trim().split(',').filter(|p| !p.is_empty()) {
+        match part.split_once('-') {
+            Some((lo, hi)) => {
+                if let (Ok(lo), Ok(hi)) = (lo.parse::<u32>(), hi.parse::<u32>()) {
+                    cpus.extend(lo..=hi);
+                }
+            }
+            None => {
+                if let Ok(cpu) = part.parse::<u32>() {
+                    cpus.push(cpu);
+                }
+            }
+        }
+    }
+    cpus
+}
+
 fn parse_int_flexible(s: &str) -> Result<u64, std::num::ParseIntError> {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16)
@@ -122,6 +144,14 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, content).unwrap();
         path
+    }
+
+    #[test]
+    fn parse_cpulist_ranges_and_singles() {
+        assert_eq!(parse_cpulist("0-3"), vec![0, 1, 2, 3]);
+        assert_eq!(parse_cpulist("0-1,4,8-9\n"), vec![0, 1, 4, 8, 9]);
+        assert_eq!(parse_cpulist(""), Vec::<u32>::new());
+        assert_eq!(parse_cpulist("x,2,3-a"), vec![2]);
     }
 
     #[test]

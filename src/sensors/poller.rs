@@ -235,6 +235,11 @@ fn discover_all_sources(
             Box::new(src)
         });
 
+        // Moderate: opens one MSR device per CPU and takes a counter baseline
+        let h_msr = s.spawn(|| -> Box<dyn SensorSource> {
+            Box::new(super::intel_msr::IntelMsrSource::discover())
+        });
+
         // Moderate: hwmon sysfs enumeration
         let h_hwmon = s.spawn(|| -> Box<dyn SensorSource> {
             let src = hwmon::HwmonSource::discover(label_overrides, voltage_scaling);
@@ -326,6 +331,7 @@ fn discover_all_sources(
         result.extend(join_or_log(h_hwmon.join(), "hwmon"));
         result.extend(join_or_log(h_gpu.join(), "gpu"));
         result.extend(join_or_log(h_hsmp.join(), "hsmp"));
+        result.extend(join_or_log(h_msr.join(), "intel_msr"));
         result.extend(join_or_log(h_ipmi.join(), "ipmi"));
 
         if let Some(h) = h_direct_io

@@ -13,6 +13,11 @@ KERNEL=="ipmi[0-9]*", TAG+="uaccess"
 # vary per board — it is not possible to enumerate specific buses statically.
 KERNEL=="i2c-[0-9]*", TAG+="uaccess"
 
+# Intel MSRs (per-core clocks, VID, thermal headroom, throttling). The
+# kernel still requires CAP_SYS_RAWIO to open these, which only the
+# setcap'd sio binary holds; sio opens them read-only.
+KERNEL=="msr[0-9]*", TAG+="uaccess"
+
 # Port I/O (Super I/O chips: ITE IT87xx, Nuvoton NCT67xx)
 KERNEL=="port", TAG+="uaccess"
 

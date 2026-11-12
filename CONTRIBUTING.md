@@ -43,6 +43,7 @@ sio reads directly from Linux kernel interfaces -- no lm-sensors or other usersp
 | CPU identification  | CPUID instruction (`raw-cpuid` crate)          |
 | CPU topology        | `/sys/devices/system/cpu/cpu*/topology/`       |
 | CPU frequency       | `/sys/devices/system/cpu/cpu*/cpufreq/`        |
+| Intel MSR telemetry | `/dev/cpu/N/msr` (read-only, allowlisted)      |
 | CPU utilization     | `/proc/stat`                                   |
 | CPU vulnerabilities | `/sys/devices/system/cpu/vulnerabilities/`     |
 | Memory              | `/proc/meminfo` + SMBIOS Type 17               |
@@ -100,6 +101,7 @@ src/
   sensors/             -- Real-time sensor polling
     hwmon.rs           -- /sys/class/hwmon reader (with label overrides)
     cpu_freq.rs        -- Per-core frequency
+    intel_msr.rs       -- Intel per-core clocks, VID, headroom, throttling
     cpu_util.rs        -- Per-core utilization from /proc/stat deltas
     gpu_sensors.rs     -- NVML (persistent handle) + amdgpu hwmon polling
     rapl.rs            -- RAPL energy counter -> watts
@@ -115,7 +117,7 @@ src/
   platform/            -- Linux kernel interface abstraction
     sysfs.rs           -- Type-safe sysfs file readers
     procfs.rs          -- /proc/meminfo, /proc/cpuinfo parsers
-    msr.rs             -- /dev/cpu/N/msr access
+    msr.rs             -- read-only, allowlisted /dev/cpu/N/msr access
     nvml.rs            -- NVML dlopen wrapper (18 functions)
     nvme_ioctl.rs      -- NVMe SMART/Health via admin command ioctl
 
