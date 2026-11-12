@@ -372,18 +372,20 @@ fn power_panel<'a>(idx: &Index, theme: &TuiTheme) -> Panel<'a> {
     for (key, label) in [
         ("cpu/rapl_limits/package-0-pl1", "PL1 (long term)"),
         ("cpu/rapl_limits/package-0-pl2", "PL2 (short term)"),
-        ("cpu/rapl_limits/package-0-pl4", "PL4 (peak)"),
+        ("cpu/rapl_limits/package-0-pl4", "PL4 (powercap)"),
         ("cpu/rapl_limits/package-0-tdp", "Base TDP"),
     ] {
         if let Some(v) = idx.value(key) {
             limits.push(kv(theme, label, format!("{v:.0} W"), theme.info_style()));
         }
     }
-    if let Some(a) = idx.value("cpu/package0/vr_current_limit") {
+    if let Some(w) = idx.value("cpu/package0/pl4") {
+        // Read from MSR 0x601 (Arrow Lake-S): the enforced PL4. Powercap's
+        // "PL4 (powercap)" row, when present, keeps its own label.
         limits.push(kv(
             theme,
-            "VR current limit",
-            format!("{a:.0} A"),
+            "PL4 (MSR, enforced)",
+            format!("{w:.0} W"),
             theme.info_style(),
         ));
     }
@@ -531,6 +533,7 @@ fn throttling_panel<'a>(idx: &Index, theme: &TuiTheme) -> Panel<'a> {
         }
         Some(reasons) => {
             let power_limited = reasons.iter().any(|(r, _)| *r == "Power limit");
+            let current_limited = reasons.iter().any(|(r, _)| *r == "Current limit");
             for (reason, cores) in reasons {
                 let plural = if cores == 1 { "core" } else { "cores" };
                 lines.push(kv(
@@ -543,7 +546,13 @@ fn throttling_panel<'a>(idx: &Index, theme: &TuiTheme) -> Panel<'a> {
             if power_limited {
                 lines.push(note(
                     theme,
-                    "Power limit: below the requested clock (PL1/PL2)",
+                    "Power limit: below the requested clock (a power limit)",
+                ));
+            }
+            if current_limited {
+                lines.push(note(
+                    theme,
+                    "Current limit: an electrical limit, or on Arrow Lake-S also PL4",
                 ));
             }
         }
