@@ -102,7 +102,7 @@ src/
     cpu_freq.rs        -- Per-core frequency
     cpu_util.rs        -- Per-core utilization from /proc/stat deltas
     gpu_sensors.rs     -- NVML (persistent handle) + amdgpu hwmon polling
-    rapl.rs            -- RAPL energy counter -> watts
+    rapl.rs            -- RAPL energy counter -> watts, configured power limits
     disk_activity.rs   -- /proc/diskstats -> MB/s
     network_stats.rs   -- Interface byte counters -> MB/s
     alerts.rs          -- Threshold-based sensor alerts with cooldown

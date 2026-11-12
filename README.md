@@ -106,7 +106,7 @@ sudo sio
 - **hwmon** -- all kernel-exported sensors: temperatures, fan speeds, voltages, power, current
 - **CPU** -- per-core frequency and utilization
 - **GPU** -- temperature, fan speed, power draw, core/memory clocks, utilization, VRAM usage (NVIDIA via NVML, AMD via sysfs); Tegra integrated GPU frequency and load via devfreq
-- **RAPL** -- CPU package power consumption
+- **RAPL** -- CPU package power consumption, configured PL1/PL2/PL4 and base TDP
 - **Tegra** -- hardware engine clocks and state (APE, DLA, VIC, NVENC, etc.) on NVIDIA Jetson platforms
 - **Disk** -- per-device read/write throughput
 - **Network** -- per-interface RX/TX throughput

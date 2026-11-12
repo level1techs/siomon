@@ -857,7 +857,8 @@ fn build_power_panel<'a>(
     let mut power: Vec<&(SensorId, SensorReading)> = snapshot
         .iter()
         .filter(|(id, r)| {
-            r.category == SensorCategory::Power && !(id.source == "cpu" && id.chip == "rapl")
+            r.category == SensorCategory::Power
+                && !(id.source == "cpu" && (id.chip == "rapl" || id.chip == "rapl_limits"))
         })
         .collect();
 
