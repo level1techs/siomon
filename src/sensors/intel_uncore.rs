@@ -4,14 +4,18 @@
 //! Every event is resolved through the kernel's sysfs PMU interface
 //! (`/sys/bus/event_source/devices/<pmu>/{type,format,events}`), so no event
 //! codes are hard-coded here:
-//! - **Ring/LLC clock**: `uncore_cncu/clockticks/` (Meteor Lake and later),
-//!   the measured ring clock as an interval average.
+//! - **Ring/LLC clock**: `uncore_cncu/clockticks/` as an interval average.
+//!   On Arrow Lake-S this counter moves with load and reaches the ring
+//!   maximum, so it is taken to be the ring clock (inferred, not confirmed).
+//!   The ring, NGU and D2D clocks are separate settings; this is not the
+//!   NGU or D2D clock.
 //! - **DRAM bandwidth**: `uncore_imc_free_running_N/data_{read,write,total}/`
 //!   with the kernel's `.scale` and `.unit`, summed over all memory
 //!   controllers. Free-running counters are shared, so other perf users
 //!   (`perf stat`, turbostat) do not take them away.
 //! - **Ring clock range**: `intel_uncore_frequency` sysfs `min_freq_khz` /
-//!   `max_freq_khz` (no privileges needed).
+//!   `max_freq_khz` (no privileges needed). These are the configured limits
+//!   (MSR 0x620), not the live clock.
 //!
 //! Rates are counts divided by the time the kernel actually ran the
 //! counter. If another perf session time-shares the ring clock counter,
